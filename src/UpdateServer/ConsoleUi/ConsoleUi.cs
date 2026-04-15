@@ -1,11 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using UpdateServer.Configuration;
-using UpdateServer.Domain;
-using UpdateServer.Infrastructure.Logging;
+using UpdateServer.Config;
+using UpdateServer.Logging;
+using UpdateServer.Sync;
 
-namespace UpdateServer.Presentation
+namespace UpdateServer.ConsoleUi
 {
     internal static class ConsoleUi
     {

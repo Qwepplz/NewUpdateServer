@@ -2,12 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using UpdateServer.Common;
-using UpdateServer.Infrastructure.Logging;
 
-namespace UpdateServer.Infrastructure.Safety
+namespace UpdateServer.FileSystem
 {
-    internal static class ManagedPathService
+    internal static class SafePathService
     {
         internal static HashSet<string> BuildProtectedPathSet(string targetDir)
     {

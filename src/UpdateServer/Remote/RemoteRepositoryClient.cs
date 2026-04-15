@@ -4,14 +4,15 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Web.Script.Serialization;
-using UpdateServer.Configuration;
-using UpdateServer.Domain;
-using UpdateServer.Infrastructure.Safety;
-using UpdateServer.Infrastructure.State;
+using UpdateServer.Config;
+using UpdateServer.FileSystem;
+using UpdateServer.Remote.Models;
+using UpdateServer.Security;
+using UpdateServer.State;
 
-namespace UpdateServer.Infrastructure.Network
+namespace UpdateServer.Remote
 {
-    internal static class RepositoryApiClient
+    internal static class RemoteRepositoryClient
     {
         private static List<string> BuildRepositoryInfoUrls(RepositoryTarget repository)
     {
@@ -187,13 +188,13 @@ namespace UpdateServer.Infrastructure.Network
             try
             {
                 DownloadToFile(url, tempPath);
-                string actualSha = FileStateService.ComputeGitBlobSha1(tempPath);
+                string actualSha = GitBlobHasher.ComputeForFile(tempPath);
                 if (!string.Equals(actualSha, expectedBlobSha, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(string.Format("Downloaded file SHA mismatch. Expected {0}, got {1}", expectedBlobSha, actualSha));
                 }
 
-                ManagedPathService.WriteFileAtomically(tempPath, destination);
+                SafePathService.WriteFileAtomically(tempPath, destination);
                 File.Delete(tempPath);
                 return;
             }

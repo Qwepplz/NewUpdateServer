@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace UpdateServer.Domain
+namespace UpdateServer.Remote.Models
 {
     internal sealed class TreeResult
     {

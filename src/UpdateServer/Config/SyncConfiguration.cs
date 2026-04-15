@@ -1,4 +1,4 @@
-namespace UpdateServer.Configuration
+namespace UpdateServer.Config
 {
     internal static class SyncConfiguration
     {

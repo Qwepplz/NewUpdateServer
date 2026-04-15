@@ -1,8 +1,9 @@
 using System;
 using System.IO;
-using UpdateServer.Configuration;
+using UpdateServer.Config;
+using UpdateServer.FileSystem;
 
-namespace UpdateServer.Common
+namespace UpdateServer.Sync
 {
     internal static class SyncPolicy
     {

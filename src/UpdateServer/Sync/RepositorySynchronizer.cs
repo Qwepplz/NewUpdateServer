@@ -3,19 +3,20 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using UpdateServer.Common;
-using UpdateServer.Domain;
-using UpdateServer.Infrastructure.Logging;
-using UpdateServer.Infrastructure.Network;
-using UpdateServer.Infrastructure.Safety;
-using UpdateServer.Infrastructure.State;
-using UpdateServer.Presentation;
+using UpdateServer.Config;
+using UpdateServer.ConsoleUi;
+using ConsoleUiHelper = UpdateServer.ConsoleUi.ConsoleUi;
+using UpdateServer.FileSystem;
+using UpdateServer.Logging;
+using UpdateServer.Remote;
+using UpdateServer.Remote.Models;
+using UpdateServer.State;
 
-namespace UpdateServer.Features.Sync
+namespace UpdateServer.Sync
 {
-    internal sealed class RepositorySyncService
+    internal sealed class RepositorySynchronizer
     {
-        public SyncSummary SyncRepository(RepositoryTarget repository, string targetDir, string stateRoot, HashSet<string> protectedPaths)
+        public SyncSummary Synchronize(RepositoryTarget repository, string targetDir, string stateRoot, HashSet<string> protectedPaths)
     {
         string tempRoot = null;
 
@@ -32,8 +33,8 @@ namespace UpdateServer.Features.Sync
             Console.WriteLine();
             Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
             Console.WriteLine("[1/4] Reading repository tree...");
-            string defaultBranch = RepositoryApiClient.GetDefaultBranch(repository);
-            TreeResult treeResult = RepositoryApiClient.GetRemoteTree(repository, new[] { defaultBranch, "main", "master" });
+            string defaultBranch = RemoteRepositoryClient.GetDefaultBranch(repository);
+            TreeResult treeResult = RemoteRepositoryClient.GetRemoteTree(repository, new[] { defaultBranch, "main", "master" });
             Console.WriteLine(string.Format("       Branch: {0}", treeResult.Branch));
             Console.WriteLine(string.Format("       Source: {0}", treeResult.Source));
 
@@ -89,7 +90,7 @@ namespace UpdateServer.Features.Sync
                     continue;
                 }
 
-                ManagedPathService.AssertSafeManagedPath(targetDir, destinationPath);
+                SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
 
                 bool matchesRemote = FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, cachedFiles);
                 if (!matchesRemote)
@@ -100,7 +101,7 @@ namespace UpdateServer.Features.Sync
                 if (matchesRemote)
                 {
                     File.Delete(destinationPath);
-                    ManagedPathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
+                    SafePathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
                     excludedRemoved++;
                     LoggingService.WriteLogOnlyLine("Removed README/LICENSE file: " + relativePath);
                 }
@@ -122,7 +123,7 @@ namespace UpdateServer.Features.Sync
             int unchanged = 0;
             List<string> newManifest = new List<string>();
             List<string> sortedRemoteFiles = SyncPathUtility.SortKeys(remoteFiles.Keys);
-            using (ProgressDisplay progress = ConsoleUi.CreateProgressDisplay())
+            using (ProgressDisplay progress = ConsoleUiHelper.CreateProgressDisplay())
             {
                 for (int index = 0; index < sortedRemoteFiles.Count; index++)
                 {
@@ -131,8 +132,8 @@ namespace UpdateServer.Features.Sync
                     string destinationPath = SyncPathUtility.GetTargetPathFromRelative(targetDir, relativePath);
                     string destinationFull = SyncPathUtility.GetFullPath(destinationPath);
                     progress.Update(
-                        ConsoleUi.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | checking", added, updated, unchanged)),
-                        ConsoleUi.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
+                        ConsoleUiHelper.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | checking", added, updated, unchanged)),
+                        ConsoleUiHelper.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
 
                     if (protectedPaths.Contains(destinationFull))
                     {
@@ -141,8 +142,8 @@ namespace UpdateServer.Features.Sync
                     }
 
                     newManifest.Add(relativePath);
-                    ManagedPathService.AssertSafeManagedPath(targetDir, destinationPath);
-                    ManagedPathService.AssertNoDirectoryConflict(destinationPath);
+                    SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
+                    SafePathService.AssertNoDirectoryConflict(destinationPath);
 
                     if (FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, cachedFiles))
                     {
@@ -162,12 +163,12 @@ namespace UpdateServer.Features.Sync
                     }
 
                     string encodedPath = SyncPathUtility.ConvertToUrlPath(relativePath);
-                    List<string> downloadUrls = RepositoryApiClient.BuildRepositoryRawUrls(repository, treeResult.Branch, encodedPath);
+                    List<string> downloadUrls = RemoteRepositoryClient.BuildRepositoryRawUrls(repository, treeResult.Branch, encodedPath);
 
                     progress.Update(
-                        ConsoleUi.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | downloading", added, updated, unchanged)),
-                        ConsoleUi.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
-                    RepositoryApiClient.DownloadRemoteFile(downloadUrls, destinationPath, entry.sha, tempRoot);
+                        ConsoleUiHelper.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | downloading", added, updated, unchanged)),
+                        ConsoleUiHelper.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
+                    RemoteRepositoryClient.DownloadRemoteFile(downloadUrls, destinationPath, entry.sha, tempRoot);
                     newCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
 
                     if (existed)
@@ -183,8 +184,8 @@ namespace UpdateServer.Features.Sync
                 }
 
                 progress.Complete(
-                    ConsoleUi.FormatProgressStatus("[3/4] Files", sortedRemoteFiles.Count, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2}", added, updated, unchanged)),
-                    ConsoleUi.FormatProgressBarLine(sortedRemoteFiles.Count, sortedRemoteFiles.Count));
+                    ConsoleUiHelper.FormatProgressStatus("[3/4] Files", sortedRemoteFiles.Count, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2}", added, updated, unchanged)),
+                    ConsoleUiHelper.FormatProgressBarLine(sortedRemoteFiles.Count, sortedRemoteFiles.Count));
             }
 
             Console.WriteLine("[4/4] Removing files deleted upstream...");
@@ -223,9 +224,9 @@ namespace UpdateServer.Features.Sync
                     continue;
                 }
 
-                ManagedPathService.AssertSafeManagedPath(targetDir, destinationPath);
+                SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
                 File.Delete(destinationPath);
-                ManagedPathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
+                SafePathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
                 removed++;
                 LoggingService.WriteLogOnlyLine("Removed upstream-deleted file: " + relativePath);
             }

@@ -3,9 +3,17 @@ setlocal
 cd /d "%~dp0"
 
 set "VERSION=1.0.1"
-set "ROOT_DIR=%~dp0.."
+for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+set "LOCAL_ROOT=%ROOT_DIR%\local"
+set "DOTNET_CLI_HOME=%LOCAL_ROOT%\dotnet-home"
+set "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"
+set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+set "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=0"
+set "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1"
+set "DOTNET_NOLOGO=1"
 set "PROJECT_FILE=%ROOT_DIR%\src\UpdateServer\UpdateServer.csproj"
-set "OUT_DIR=%ROOT_DIR%\dist"
+set "OUT_DIR=%LOCAL_ROOT%\dist"
+set "BIN_FILE=%LOCAL_ROOT%\build\UpdateServer\bin\Release\net48\UpdateServer.exe"
 set "OUT_FILE=%OUT_DIR%\UpdateServer.exe"
 set "DOTNET=dotnet"
 set "SIGN_CERT="
@@ -13,6 +21,7 @@ set "SIGN_PASSWORD="
 set "SIGNTOOL="
 set "TIMESTAMP_URL=http://timestamp.digicert.com"
 set "NO_PAUSE=%BUILD_NO_PAUSE%"
+set "EXIT_CODE=0"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -52,18 +61,30 @@ if errorlevel 1 (
     goto finish
 )
 
+if not exist "%LOCAL_ROOT%" mkdir "%LOCAL_ROOT%"
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
-set "DOTNET_CLI_HOME=%ROOT_DIR%\.dotnet-home"
 if not exist "%DOTNET_CLI_HOME%" mkdir "%DOTNET_CLI_HOME%"
-set "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"
-set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
 
 echo Building UpdateServer v%VERSION%...
-%DOTNET% build "%PROJECT_FILE%" -c Release -o "%OUT_DIR%" --nologo
+%DOTNET% build "%PROJECT_FILE%" -c Release --nologo
 
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo Build failed. Exit code: %EXIT_CODE%
+    goto finish
+)
+
+if not exist "%BIN_FILE%" (
+    echo Build output was not found:
+    echo %BIN_FILE%
+    set "EXIT_CODE=1"
+    goto finish
+)
+
+copy /Y "%BIN_FILE%" "%OUT_FILE%" >nul
+if errorlevel 1 (
+    echo Cannot copy build output to dist.
+    set "EXIT_CODE=1"
     goto finish
 )
 

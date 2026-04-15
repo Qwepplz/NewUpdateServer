@@ -4,10 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
-using UpdateServer.Common;
-using UpdateServer.Domain;
+using UpdateServer.FileSystem;
 
-namespace UpdateServer.Infrastructure.State
+namespace UpdateServer.State
 {
     internal static class SyncStateStore
     {

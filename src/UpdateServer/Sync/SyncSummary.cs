@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace UpdateServer.Domain
+namespace UpdateServer.Sync
 {
     internal sealed class SyncSummary
     {

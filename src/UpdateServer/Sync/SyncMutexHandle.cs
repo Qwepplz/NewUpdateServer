@@ -1,7 +1,7 @@
 using System;
 using System.Threading;
 
-namespace UpdateServer.Infrastructure.Safety
+namespace UpdateServer.Sync
 {
     internal sealed class SyncMutexHandle : IDisposable
     {

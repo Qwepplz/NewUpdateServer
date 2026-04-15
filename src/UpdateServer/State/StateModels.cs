@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace UpdateServer.Domain
+namespace UpdateServer.State
 {
     internal sealed class SyncState
     {

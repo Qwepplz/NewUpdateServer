@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-namespace UpdateServer.Presentation
+namespace UpdateServer.ConsoleUi
 {
     internal sealed class ProgressDisplay : IDisposable
     {

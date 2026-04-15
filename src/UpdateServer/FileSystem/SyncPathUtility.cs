@@ -4,9 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
-using UpdateServer.Configuration;
+using UpdateServer.Config;
 
-namespace UpdateServer.Common
+namespace UpdateServer.FileSystem
 {
     internal static class SyncPathUtility
     {

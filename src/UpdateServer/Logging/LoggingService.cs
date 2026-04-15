@@ -1,11 +1,10 @@
 using System;
 using System.IO;
 using System.Text;
-using UpdateServer.Common;
-using UpdateServer.Configuration;
-using UpdateServer.Infrastructure.Safety;
+using UpdateServer.Config;
+using UpdateServer.FileSystem;
 
-namespace UpdateServer.Infrastructure.Logging
+namespace UpdateServer.Logging
 {
     internal static class LoggingService
     {
@@ -348,9 +347,9 @@ namespace UpdateServer.Infrastructure.Logging
             }
 
             string nextPath = SyncPathUtility.GetFullPath(Path.Combine(logDirectoryPath, SyncConfiguration.LogFilePrefix + today.ToString(SyncConfiguration.LogFileDateFormat) + SyncConfiguration.LogFileExtension));
-            ManagedPathService.AssertSafeManagedPath(targetDir, nextPath);
+            SafePathService.AssertSafeManagedPath(targetDir, nextPath);
             Directory.CreateDirectory(logDirectoryPath);
-            ManagedPathService.AssertSafeManagedPath(targetDir, nextPath);
+            SafePathService.AssertSafeManagedPath(targetDir, nextPath);
 
             if (currentWriter != null)
             {

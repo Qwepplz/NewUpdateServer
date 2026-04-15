@@ -1,10 +1,12 @@
+using UpdateServer.App;
+
 namespace UpdateServer
 {
     internal static class Program
     {
         public static int Main(string[] args)
         {
-            return new UpdateServerHost().Run(args);
+            return new UpdateServerApplication().Run(args);
         }
     }
 }

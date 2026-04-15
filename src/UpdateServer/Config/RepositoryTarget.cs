@@ -1,6 +1,6 @@
 using System;
 
-namespace UpdateServer.Domain
+namespace UpdateServer.Config
 {
     internal sealed class RepositoryTarget
     {

@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
-using UpdateServer.Domain;
 
-namespace UpdateServer.Configuration
+namespace UpdateServer.Config
 {
     internal static class RepositoryCatalog
     {
