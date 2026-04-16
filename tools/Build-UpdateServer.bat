@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "VERSION=1.0.1"
+set "VERSION=1.0.0"
 for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
 set "LOCAL_ROOT=%ROOT_DIR%\local"
 set "DOTNET_CLI_HOME=%LOCAL_ROOT%\dotnet-home"

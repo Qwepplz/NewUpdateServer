@@ -18,6 +18,7 @@ namespace UpdateServer.App
         public int Run(string[] args)
         {
             string targetDir = SyncPathUtility.GetFullPath(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string tempRootDirectoryPath = null;
             SyncMutexHandle mutexHandle = null;
             LoggingService.TryInitialize(targetDir, args);
 
@@ -42,15 +43,38 @@ namespace UpdateServer.App
                     Console.WriteLine(string.Format("Cleaned leftover temp files: {0}", staleArtifactsRemoved));
                 }
 
+                tempRootDirectoryPath = Path.Combine(Path.GetTempPath(), "PugGet5Sync_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(tempRootDirectoryPath);
+
                 string stateRoot = SyncPathUtility.GetStateDirectory(targetDir, targetHash);
                 SyncSummary totalSummary = new SyncSummary();
+                int synchronizedRepositoryCount = 0;
+
                 foreach (RepositoryTarget repository in selectedRepositories)
                 {
-                    totalSummary.Merge(repositorySynchronizer.Synchronize(repository, targetDir, stateRoot, protectedPaths));
+                    Console.WriteLine();
+                    Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
+
+                    UpdateServer.Remote.Models.TreeResult preparedTree;
+                    UpdateServer.Remote.RepositoryRemoteKind remoteKind;
+                    if (!TryPrepareRepositoryTree(repository, tempRootDirectoryPath, out preparedTree, out remoteKind))
+                    {
+                        continue;
+                    }
+
+                    totalSummary.Merge(repositorySynchronizer.Synchronize(repository, preparedTree, remoteKind, targetDir, stateRoot, protectedPaths, tempRootDirectoryPath));
+                    synchronizedRepositoryCount++;
                 }
 
                 Console.WriteLine();
-                Console.WriteLine(selectedRepositories.Count > 1 ? "All selected syncs complete." : "Sync complete.");
+                if (synchronizedRepositoryCount == 0)
+                {
+                    Console.WriteLine("No repositories were synchronized.");
+                    ConsoleUiHelper.PauseBeforeExit();
+                    return 0;
+                }
+
+                Console.WriteLine(synchronizedRepositoryCount > 1 ? "Selected syncs complete." : "Sync complete.");
                 PrintSyncSummary(totalSummary);
                 ConsoleUiHelper.PauseBeforeExit();
                 return 0;
@@ -71,7 +95,60 @@ namespace UpdateServer.App
                     mutexHandle.Dispose();
                 }
 
+                if (!string.IsNullOrWhiteSpace(tempRootDirectoryPath) && Directory.Exists(tempRootDirectoryPath))
+                {
+                    try
+                    {
+                        Directory.Delete(tempRootDirectoryPath, true);
+                    }
+                    catch
+                    {
+                    }
+                }
+
                 LoggingService.Shutdown();
+            }
+        }
+
+        private static bool TryPrepareRepositoryTree(
+            RepositoryTarget repository,
+            string tempRootDirectoryPath,
+            out UpdateServer.Remote.Models.TreeResult treeResult,
+            out UpdateServer.Remote.RepositoryRemoteKind remoteKind)
+        {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+            if (string.IsNullOrWhiteSpace(tempRootDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempRootDirectoryPath));
+
+            treeResult = null;
+            remoteKind = UpdateServer.Remote.RepositoryRemoteKind.Github;
+
+            try
+            {
+                treeResult = UpdateServer.Remote.RemoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
+                LoggingService.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": GitHub.");
+                return true;
+            }
+            catch (Exception githubException)
+            {
+                LoggingService.WriteLogOnlyLine("GitHub sync preparation failed for " + repository.DisplayName + ":");
+                LoggingService.WriteLogOnlyLine(githubException.ToString());
+
+                if (!repository.HasMirror)
+                {
+                    throw;
+                }
+
+                if (!ConsoleUiHelper.ShowMirrorConfirmation(repository, githubException.Message))
+                {
+                    Console.WriteLine(string.Format("Skipped sync for {0}.", repository.DisplayName));
+                    LoggingService.WriteLogOnlyLine("Mirror sync canceled by user for " + repository.DisplayName + ".");
+                    return false;
+                }
+
+                remoteKind = UpdateServer.Remote.RepositoryRemoteKind.Mirror;
+                treeResult = UpdateServer.Remote.RemoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
+                LoggingService.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": Gitee mirror.");
+                return true;
             }
         }
 

@@ -16,25 +16,29 @@ namespace UpdateServer.Sync
 {
     internal sealed class RepositorySynchronizer
     {
-        public SyncSummary Synchronize(RepositoryTarget repository, string targetDir, string stateRoot, HashSet<string> protectedPaths)
-    {
-        string tempRoot = null;
-
-        try
+        public SyncSummary Synchronize(
+            RepositoryTarget repository,
+            TreeResult treeResult,
+            RepositoryRemoteKind remoteKind,
+            string targetDir,
+            string stateRoot,
+            HashSet<string> protectedPaths,
+            string tempRootDirectoryPath)
         {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+            if (treeResult == null) throw new ArgumentNullException(nameof(treeResult));
+            if (treeResult.Tree == null) throw new InvalidOperationException("Repository tree is not available.");
+            if (string.IsNullOrWhiteSpace(targetDir)) throw new ArgumentException("Value cannot be empty.", nameof(targetDir));
+            if (string.IsNullOrWhiteSpace(stateRoot)) throw new ArgumentException("Value cannot be empty.", nameof(stateRoot));
+            if (protectedPaths == null) throw new ArgumentNullException(nameof(protectedPaths));
+            if (string.IsNullOrWhiteSpace(tempRootDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempRootDirectoryPath));
+
             string repoStateDir = Path.Combine(stateRoot, repository.StateKey);
             Directory.CreateDirectory(repoStateDir);
             string manifestPath = Path.Combine(repoStateDir, "tracked-files.txt");
             string statePath = Path.Combine(repoStateDir, "sync-state.json");
 
-            tempRoot = Path.Combine(Path.GetTempPath(), "PugGet5Sync_" + repository.StateKey + "_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(tempRoot);
-
-            Console.WriteLine();
-            Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
-            Console.WriteLine("[1/4] Reading repository tree...");
-            string defaultBranch = RemoteRepositoryClient.GetDefaultBranch(repository);
-            TreeResult treeResult = RemoteRepositoryClient.GetRemoteTree(repository, new[] { defaultBranch, "main", "master" });
+            Console.WriteLine("[1/4] Repository access ready...");
             Console.WriteLine(string.Format("       Branch: {0}", treeResult.Branch));
             Console.WriteLine(string.Format("       Source: {0}", treeResult.Source));
 
@@ -162,13 +166,10 @@ namespace UpdateServer.Sync
                         continue;
                     }
 
-                    string encodedPath = SyncPathUtility.ConvertToUrlPath(relativePath);
-                    List<string> downloadUrls = RemoteRepositoryClient.BuildRepositoryRawUrls(repository, treeResult.Branch, encodedPath);
-
                     progress.Update(
                         ConsoleUiHelper.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | downloading", added, updated, unchanged)),
                         ConsoleUiHelper.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
-                    RemoteRepositoryClient.DownloadRemoteFile(downloadUrls, destinationPath, entry.sha, tempRoot);
+                    DownloadRemoteFile(repository, treeResult.Branch, entry, tempRootDirectoryPath, destinationPath, remoteKind);
                     newCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
 
                     if (existed)
@@ -245,19 +246,33 @@ namespace UpdateServer.Sync
                 SkippedConflictFiles = new HashSet<string>(skippedConflictFiles, StringComparer.OrdinalIgnoreCase)
             };
         }
-        finally
+
+        private static void DownloadRemoteFile(
+            RepositoryTarget repository,
+            string branch,
+            TreeEntry entry,
+            string tempRootDirectoryPath,
+            string destinationPath,
+            RepositoryRemoteKind remoteKind)
         {
-            if (!string.IsNullOrEmpty(tempRoot) && Directory.Exists(tempRoot))
+            string tempFilePath = RemoteRepositoryClient.DownloadVerifiedFileToTemporaryPath(repository, branch, entry, tempRootDirectoryPath, remoteKind);
+            try
             {
-                try
+                SafePathService.WriteFileAtomically(tempFilePath, destinationPath);
+            }
+            finally
+            {
+                if (File.Exists(tempFilePath))
                 {
-                    Directory.Delete(tempRoot, true);
-                }
-                catch
-                {
+                    try
+                    {
+                        File.Delete(tempFilePath);
+                    }
+                    catch
+                    {
+                    }
                 }
             }
         }
-    }
     }
 }
