@@ -44,6 +44,7 @@ namespace UpdateServer.Logging
             activeLog.Attach();
             activeLog.WriteSessionStart(targetDir, args);
             Console.WriteLine(string.Format("Log file: {0}", activeLog.CurrentLogPath));
+            LogArchiveService.TryArchivePreviousLogs(targetDir, activeLog.CurrentLogPath, activeLog.WriteLogOnlyLine);
         }
         catch
         {
