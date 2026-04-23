@@ -16,29 +16,49 @@ namespace UpdateServer.Logging
         }
 
         internal static void WriteLogOnlyLine(string message)
-    {
-        if (activeLog == null)
         {
-            return;
-        }
+            if (activeLog == null)
+            {
+                return;
+            }
 
-        try
-        {
-            activeLog.WriteLogOnlyLine(message);
+            try
+            {
+                activeLog.WriteLogOnlyLine(message);
+            }
+            catch
+            {
+            }
         }
-        catch
-        {
-        }
-    }
 
         internal static void TryInitialize(string targetDir, string[] args)
-    {
-        if (activeLog != null)
         {
-            return;
+            if (activeLog != null)
+            {
+                return;
+            }
+
+            try
+            {
+                InitializeActiveLog(targetDir, args);
+            }
+            catch
+            {
+                DisposeActiveLogQuietly();
+            }
         }
 
-        try
+        internal static void Shutdown()
+        {
+            DisposeActiveLogQuietly();
+        }
+
+        internal static void LogException(Exception exception)
+        {
+            TryWriteUnhandledException(exception);
+        }
+
+        private static void InitializeActiveLog(string targetDir, string[] args)
         {
             activeLog = LogSession.Create(targetDir);
             activeLog.Attach();
@@ -46,62 +66,46 @@ namespace UpdateServer.Logging
             Console.WriteLine(string.Format("Log file: {0}", activeLog.CurrentLogPath));
             LogArchiveService.TryArchivePreviousLogs(targetDir, activeLog.CurrentLogPath, activeLog.WriteLogOnlyLine);
         }
-        catch
-        {
-            if (activeLog != null)
-            {
-                try
-                {
-                    activeLog.Dispose();
-                }
-                catch
-                {
-                }
 
+        private static void DisposeActiveLogQuietly()
+        {
+            if (activeLog == null)
+            {
+                return;
+            }
+
+            try
+            {
+                activeLog.Dispose();
+            }
+            catch
+            {
+            }
+            finally
+            {
                 activeLog = null;
             }
         }
-    }
 
-        internal static void Shutdown()
-    {
-        if (activeLog == null)
+        private static void TryWriteUnhandledException(Exception exception)
         {
-            return;
-        }
+            if (activeLog == null || exception == null)
+            {
+                return;
+            }
 
-        try
-        {
-            activeLog.Dispose();
+            try
+            {
+                activeLog.WriteLogOnlyLine("Unhandled exception:");
+                activeLog.WriteLogOnlyLine(exception.ToString());
+            }
+            catch
+            {
+            }
         }
-        catch
-        {
-        }
-        finally
-        {
-            activeLog = null;
-        }
-    }
-
-        internal static void LogException(Exception exception)
-    {
-        if (activeLog == null || exception == null)
-        {
-            return;
-        }
-
-        try
-        {
-            activeLog.WriteLogOnlyLine("Unhandled exception:");
-            activeLog.WriteLogOnlyLine(exception.ToString());
-        }
-        catch
-        {
-        }
-    }
 
         private sealed class LogSession : IDisposable
-    {
+        {
         private readonly TextWriter originalOut;
         private readonly TextWriter originalError;
         private readonly DailyLogFileWriter dailyWriter;
@@ -213,10 +217,10 @@ namespace UpdateServer.Logging
 
             return string.Join(" ", args);
         }
-    }
+        }
 
         private sealed class TeeTextWriter : TextWriter
-    {
+        {
         private readonly TextWriter primary;
         private readonly TextWriter secondary;
 
@@ -260,10 +264,10 @@ namespace UpdateServer.Logging
             primary.Flush();
             secondary.Flush();
         }
-    }
+        }
 
         private sealed class DailyLogFileWriter : TextWriter
-    {
+        {
         private static readonly Encoding Utf8WithoutBom = new UTF8Encoding(false);
         private readonly string targetDir;
         private readonly string logDirectoryPath;
@@ -363,10 +367,10 @@ namespace UpdateServer.Logging
             currentWriter = new StreamWriter(File.Open(currentPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), Utf8WithoutBom);
             currentWriter.AutoFlush = true;
         }
-    }
+        }
 
         private sealed class TimestampedFileWriter : TextWriter
-    {
+        {
         private readonly TextWriter innerWriter;
         private bool isLineStart = true;
 
@@ -436,6 +440,6 @@ namespace UpdateServer.Logging
         {
             innerWriter.Flush();
         }
-    }
+        }
     }
 }

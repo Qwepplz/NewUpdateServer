@@ -148,7 +148,7 @@ namespace UpdateServer.Compression
             string entryName,
             long unpackedSize,
             DateTime lastWriteTimeUtc,
-            LzmaEncoder encoder,
+            ICoder encoder,
             byte[] coderProperties,
             Stream archiveStream)
         {
@@ -184,7 +184,7 @@ namespace UpdateServer.Compression
             string entryName,
             long unpackedSize,
             DateTime lastWriteTimeUtc,
-            LzmaEncoder encoder,
+            ICoder encoder,
             byte[] coderProperties,
             Stream archiveStream)
         {

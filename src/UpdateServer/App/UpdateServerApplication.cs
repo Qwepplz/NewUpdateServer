@@ -15,11 +15,43 @@ namespace UpdateServer.App
     {
         private readonly RepositorySynchronizer repositorySynchronizer = new RepositorySynchronizer();
 
+        private sealed class RunContext
+        {
+            private RunContext(string targetDir, string targetHash, string tempRootDirectoryPath, string stateRoot, HashSet<string> protectedPaths)
+            {
+                TargetDir = targetDir;
+                TargetHash = targetHash;
+                TempRootDirectoryPath = tempRootDirectoryPath;
+                StateRoot = stateRoot;
+                ProtectedPaths = protectedPaths;
+            }
+
+            public string TargetDir { get; private set; }
+
+            public string TargetHash { get; private set; }
+
+            public string TempRootDirectoryPath { get; private set; }
+
+            public string StateRoot { get; private set; }
+
+            public HashSet<string> ProtectedPaths { get; private set; }
+
+            public static RunContext Create(string targetDir)
+            {
+                string targetHash = SyncPathUtility.GetTargetHash(targetDir);
+                HashSet<string> protectedPaths = SafePathService.BuildProtectedPathSet(targetDir);
+                string tempRootDirectoryPath = Path.Combine(Path.GetTempPath(), "PugGet5Sync_" + Guid.NewGuid().ToString("N"));
+                string stateRoot = SyncPathUtility.GetStateDirectory(targetDir, targetHash);
+
+                return new RunContext(targetDir, targetHash, tempRootDirectoryPath, stateRoot, protectedPaths);
+            }
+        }
+
         public int Run(string[] args)
         {
             string targetDir = SyncPathUtility.GetFullPath(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            string tempRootDirectoryPath = null;
             SyncMutexHandle mutexHandle = null;
+            RunContext runContext = null;
             LoggingService.TryInitialize(targetDir, args);
 
             try
@@ -33,60 +65,18 @@ namespace UpdateServer.App
                     return 0;
                 }
 
-                string targetHash = SyncPathUtility.GetTargetHash(targetDir);
-                mutexHandle = SyncMutexHandle.Acquire(targetHash);
+                runContext = RunContext.Create(targetDir);
+                mutexHandle = SyncMutexHandle.Acquire(runContext.TargetHash);
+                ReportStaleArtifacts(runContext.TargetDir, runContext.ProtectedPaths);
+                Directory.CreateDirectory(runContext.TempRootDirectoryPath);
 
-                HashSet<string> protectedPaths = SafePathService.BuildProtectedPathSet(targetDir);
-                int staleArtifactsRemoved = SafePathService.RemoveStaleUpdaterArtifacts(targetDir, protectedPaths);
-                if (staleArtifactsRemoved > 0)
-                {
-                    Console.WriteLine(string.Format("Cleaned leftover temp files: {0}", staleArtifactsRemoved));
-                }
+                Tuple<SyncSummary, int> synchronizationResult = SynchronizeSelectedRepositories(selectedRepositories, runContext);
 
-                tempRootDirectoryPath = Path.Combine(Path.GetTempPath(), "PugGet5Sync_" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(tempRootDirectoryPath);
-
-                string stateRoot = SyncPathUtility.GetStateDirectory(targetDir, targetHash);
-                SyncSummary totalSummary = new SyncSummary();
-                int synchronizedRepositoryCount = 0;
-
-                foreach (RepositoryTarget repository in selectedRepositories)
-                {
-                    Console.WriteLine();
-                    Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
-
-                    UpdateServer.Remote.Models.TreeResult preparedTree;
-                    UpdateServer.Remote.RepositoryRemoteKind remoteKind;
-                    if (!TryPrepareRepositoryTree(repository, tempRootDirectoryPath, out preparedTree, out remoteKind))
-                    {
-                        continue;
-                    }
-
-                    totalSummary.Merge(repositorySynchronizer.Synchronize(repository, preparedTree, remoteKind, targetDir, stateRoot, protectedPaths, tempRootDirectoryPath));
-                    synchronizedRepositoryCount++;
-                }
-
-                Console.WriteLine();
-                if (synchronizedRepositoryCount == 0)
-                {
-                    Console.WriteLine("No repositories were synchronized.");
-                    ConsoleUiHelper.PauseBeforeExit();
-                    return 0;
-                }
-
-                Console.WriteLine(synchronizedRepositoryCount > 1 ? "Selected syncs complete." : "Sync complete.");
-                PrintSyncSummary(totalSummary);
-                ConsoleUiHelper.PauseBeforeExit();
-                return 0;
+                return CompleteRun(synchronizationResult.Item1, synchronizationResult.Item2);
             }
             catch (Exception exception)
             {
-                Console.WriteLine();
-                Console.WriteLine("Sync failed.");
-                Console.WriteLine(exception.Message);
-                LoggingService.LogException(exception);
-                ConsoleUiHelper.PauseBeforeExit();
-                return 1;
+                return FailRun(exception);
             }
             finally
             {
@@ -95,19 +85,84 @@ namespace UpdateServer.App
                     mutexHandle.Dispose();
                 }
 
-                if (!string.IsNullOrWhiteSpace(tempRootDirectoryPath) && Directory.Exists(tempRootDirectoryPath))
+                CleanupRun(runContext);
+            }
+        }
+
+        private static void ReportStaleArtifacts(string targetDir, HashSet<string> protectedPaths)
+        {
+            int staleArtifactsRemoved = SafePathService.RemoveStaleUpdaterArtifacts(targetDir, protectedPaths);
+            if (staleArtifactsRemoved > 0)
+            {
+                Console.WriteLine(string.Format("Cleaned leftover temp files: {0}", staleArtifactsRemoved));
+            }
+        }
+
+        private Tuple<SyncSummary, int> SynchronizeSelectedRepositories(List<RepositoryTarget> selectedRepositories, RunContext runContext)
+        {
+            string stateRoot = runContext.StateRoot;
+            SyncSummary totalSummary = new SyncSummary();
+            int synchronizedRepositoryCount = 0;
+
+            foreach (RepositoryTarget repository in selectedRepositories)
+            {
+                Console.WriteLine();
+                Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
+
+                UpdateServer.Remote.Models.TreeResult preparedTree;
+                UpdateServer.Remote.RepositoryRemoteKind remoteKind;
+                if (!TryPrepareRepositoryTree(repository, runContext.TempRootDirectoryPath, out preparedTree, out remoteKind))
                 {
-                    try
-                    {
-                        Directory.Delete(tempRootDirectoryPath, true);
-                    }
-                    catch
-                    {
-                    }
+                    continue;
                 }
 
-                LoggingService.Shutdown();
+                totalSummary.Merge(repositorySynchronizer.Synchronize(repository, preparedTree, remoteKind, runContext.TargetDir, stateRoot, runContext.ProtectedPaths, runContext.TempRootDirectoryPath));
+                synchronizedRepositoryCount++;
             }
+
+            return Tuple.Create(totalSummary, synchronizedRepositoryCount);
+        }
+
+        private static int CompleteRun(SyncSummary totalSummary, int synchronizedRepositoryCount)
+        {
+            Console.WriteLine();
+            if (synchronizedRepositoryCount == 0)
+            {
+                Console.WriteLine("No repositories were synchronized.");
+                ConsoleUiHelper.PauseBeforeExit();
+                return 0;
+            }
+
+            Console.WriteLine(synchronizedRepositoryCount > 1 ? "Selected syncs complete." : "Sync complete.");
+            PrintSyncSummary(totalSummary);
+            ConsoleUiHelper.PauseBeforeExit();
+            return 0;
+        }
+
+        private static int FailRun(Exception exception)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Sync failed.");
+            Console.WriteLine(exception.Message);
+            LoggingService.LogException(exception);
+            ConsoleUiHelper.PauseBeforeExit();
+            return 1;
+        }
+
+        private static void CleanupRun(RunContext runContext)
+        {
+            if (runContext != null && !string.IsNullOrWhiteSpace(runContext.TempRootDirectoryPath) && Directory.Exists(runContext.TempRootDirectoryPath))
+            {
+                try
+                {
+                    Directory.Delete(runContext.TempRootDirectoryPath, true);
+                }
+                catch
+                {
+                }
+            }
+
+            LoggingService.Shutdown();
         }
 
         private static bool TryPrepareRepositoryTree(

@@ -16,8 +16,7 @@ namespace UpdateServer.Remote
     {
         internal static TreeResult PrepareRepositoryTree(RepositoryTarget repository, string tempDirectoryPath, RepositoryRemoteKind remoteKind)
         {
-            if (repository == null) throw new ArgumentNullException(nameof(repository));
-            if (string.IsNullOrWhiteSpace(tempDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempDirectoryPath));
+            ValidatePrepareRepositoryTreeArguments(repository, tempDirectoryPath);
 
             TreeResult treeResult = GetRemoteTree(repository, remoteKind);
             ProbeRawAccess(repository, treeResult, tempDirectoryPath, remoteKind);
@@ -26,11 +25,7 @@ namespace UpdateServer.Remote
 
         internal static string DownloadVerifiedFileToTemporaryPath(RepositoryTarget repository, string branch, TreeEntry entry, string tempDirectoryPath, RepositoryRemoteKind remoteKind)
         {
-            if (repository == null) throw new ArgumentNullException(nameof(repository));
-            if (string.IsNullOrWhiteSpace(branch)) throw new ArgumentException("Value cannot be empty.", nameof(branch));
-            if (entry == null) throw new ArgumentNullException(nameof(entry));
-            if (string.IsNullOrWhiteSpace(tempDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempDirectoryPath));
-            if (!string.Equals(entry.type, "blob", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Only blob entries can be downloaded.");
+            ValidateDownloadArguments(repository, branch, entry, tempDirectoryPath);
 
             Directory.CreateDirectory(tempDirectoryPath);
             string url = BuildRepositoryRawUrl(repository, branch, entry.path, remoteKind);
@@ -136,47 +131,92 @@ namespace UpdateServer.Remote
 
         private static string BuildRepositoryInfoUrl(RepositoryTarget repository, RepositoryRemoteKind remoteKind)
         {
-            if (repository == null) throw new ArgumentNullException(nameof(repository));
-
+            string owner = GetRepositoryOwner(repository, remoteKind);
+            string name = GetRepositoryName(repository, remoteKind);
             if (remoteKind == RepositoryRemoteKind.Github)
             {
-                return string.Format("https://api.github.com/repos/{0}/{1}", repository.GithubOwner, repository.GithubRepo);
+                return string.Format("https://api.github.com/repos/{0}/{1}", owner, name);
             }
 
-            AssertMirrorConfigured(repository);
-            return string.Format("https://gitee.com/api/v5/repos/{0}/{1}", repository.MirrorOwner, repository.MirrorRepo);
+            return string.Format("https://gitee.com/api/v5/repos/{0}/{1}", owner, name);
         }
 
         private static string BuildRepositoryTreeUrl(RepositoryTarget repository, string branch, RepositoryRemoteKind remoteKind)
         {
-            if (repository == null) throw new ArgumentNullException(nameof(repository));
-            if (string.IsNullOrWhiteSpace(branch)) throw new ArgumentException("Value cannot be empty.", nameof(branch));
+            ValidatePathArgument(branch, nameof(branch));
 
+            string owner = GetRepositoryOwner(repository, remoteKind);
+            string name = GetRepositoryName(repository, remoteKind);
             string encodedBranch = Uri.EscapeDataString(branch);
             if (remoteKind == RepositoryRemoteKind.Github)
             {
-                return string.Format("https://api.github.com/repos/{0}/{1}/git/trees/{2}?recursive=1", repository.GithubOwner, repository.GithubRepo, encodedBranch);
+                return string.Format("https://api.github.com/repos/{0}/{1}/git/trees/{2}?recursive=1", owner, name, encodedBranch);
             }
 
-            AssertMirrorConfigured(repository);
-            return string.Format("https://gitee.com/api/v5/repos/{0}/{1}/git/trees/{2}?recursive=1", repository.MirrorOwner, repository.MirrorRepo, encodedBranch);
+            return string.Format("https://gitee.com/api/v5/repos/{0}/{1}/git/trees/{2}?recursive=1", owner, name, encodedBranch);
         }
 
         private static string BuildRepositoryRawUrl(RepositoryTarget repository, string branch, string relativePath, RepositoryRemoteKind remoteKind)
         {
-            if (repository == null) throw new ArgumentNullException(nameof(repository));
-            if (string.IsNullOrWhiteSpace(branch)) throw new ArgumentException("Value cannot be empty.", nameof(branch));
-            if (string.IsNullOrWhiteSpace(relativePath)) throw new ArgumentException("Value cannot be empty.", nameof(relativePath));
+            ValidatePathArgument(branch, nameof(branch));
+            ValidatePathArgument(relativePath, nameof(relativePath));
 
+            string owner = GetRepositoryOwner(repository, remoteKind);
+            string name = GetRepositoryName(repository, remoteKind);
             string encodedPath = SyncPathUtility.ConvertToUrlPath(relativePath);
             string encodedBranch = Uri.EscapeDataString(branch);
             if (remoteKind == RepositoryRemoteKind.Github)
             {
-                return string.Format("https://raw.githubusercontent.com/{0}/{1}/{2}/{3}", repository.GithubOwner, repository.GithubRepo, encodedBranch, encodedPath);
+                return string.Format("https://raw.githubusercontent.com/{0}/{1}/{2}/{3}", owner, name, encodedBranch, encodedPath);
+            }
+
+            return string.Format("https://gitee.com/{0}/{1}/raw/{2}/{3}", owner, name, encodedBranch, encodedPath);
+        }
+
+        private static string GetRepositoryOwner(RepositoryTarget repository, RepositoryRemoteKind remoteKind)
+        {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+
+            if (remoteKind == RepositoryRemoteKind.Github)
+            {
+                return repository.GithubOwner;
             }
 
             AssertMirrorConfigured(repository);
-            return string.Format("https://gitee.com/{0}/{1}/raw/{2}/{3}", repository.MirrorOwner, repository.MirrorRepo, encodedBranch, encodedPath);
+            return repository.MirrorOwner;
+        }
+
+        private static string GetRepositoryName(RepositoryTarget repository, RepositoryRemoteKind remoteKind)
+        {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+
+            if (remoteKind == RepositoryRemoteKind.Github)
+            {
+                return repository.GithubRepo;
+            }
+
+            AssertMirrorConfigured(repository);
+            return repository.MirrorRepo;
+        }
+
+        private static void ValidatePrepareRepositoryTreeArguments(RepositoryTarget repository, string tempDirectoryPath)
+        {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+            ValidatePathArgument(tempDirectoryPath, nameof(tempDirectoryPath));
+        }
+
+        private static void ValidateDownloadArguments(RepositoryTarget repository, string branch, TreeEntry entry, string tempDirectoryPath)
+        {
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+            ValidatePathArgument(branch, nameof(branch));
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            ValidatePathArgument(tempDirectoryPath, nameof(tempDirectoryPath));
+            if (!string.Equals(entry.type, "blob", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Only blob entries can be downloaded.");
+        }
+
+        private static void ValidatePathArgument(string value, string paramName)
+        {
+            if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("Value cannot be empty.", paramName);
         }
 
         private static void AssertMirrorConfigured(RepositoryTarget repository)
@@ -230,7 +270,7 @@ namespace UpdateServer.Remote
 
         private static JsonResponse<T> RequestJsonFromUrl<T>(string url)
         {
-            if (string.IsNullOrWhiteSpace(url)) throw new ArgumentException("Value cannot be empty.", nameof(url));
+            ValidatePathArgument(url, nameof(url));
 
             try
             {
@@ -247,6 +287,8 @@ namespace UpdateServer.Remote
 
         private static string DownloadString(string url, string accept)
         {
+            ValidatePathArgument(url, nameof(url));
+
             HttpWebRequest request = CreateRequest(url, accept);
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (Stream stream = EnsureStream(response.GetResponseStream()))
@@ -258,6 +300,9 @@ namespace UpdateServer.Remote
 
         private static void DownloadToFile(string url, string destination)
         {
+            ValidatePathArgument(url, nameof(url));
+            ValidatePathArgument(destination, nameof(destination));
+
             HttpWebRequest request = CreateRequest(url, "application/octet-stream, */*");
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (Stream stream = EnsureStream(response.GetResponseStream()))

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UpdateServer.Compression;
 using UpdateServer.Config;
@@ -17,34 +18,12 @@ namespace UpdateServer.Logging
                 return;
             }
 
-            string normalizedCurrentLogPath = SyncPathUtility.GetFullPath(currentLogPath);
-            string logDirectoryPath = SyncPathUtility.GetLogDirectoryPath(targetDir);
-            if (!Directory.Exists(logDirectoryPath))
-            {
-                return;
-            }
-
-            string[] logFilePaths = Directory.GetFiles(
-                logDirectoryPath,
-                SyncConfiguration.LogFilePrefix + "*" + SyncConfiguration.LogFileExtension);
-
-            if (logFilePaths.Length == 0)
-            {
-                return;
-            }
-
-            Array.Sort(logFilePaths, StringComparer.OrdinalIgnoreCase);
+            string[] archiveCandidates = GetArchiveCandidates(targetDir, currentLogPath);
 
             int archivedCount = 0;
-            foreach (string logFilePath in logFilePaths)
+            foreach (string logFilePath in archiveCandidates)
             {
-                string fullLogPath = SyncPathUtility.GetFullPath(logFilePath);
-                if (string.Equals(fullLogPath, normalizedCurrentLogPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (TryArchiveSingleLog(targetDir, fullLogPath, writeLogLine))
+                if (TryArchiveSingleLog(targetDir, logFilePath, writeLogLine))
                 {
                     archivedCount++;
                 }
@@ -54,6 +33,41 @@ namespace UpdateServer.Logging
             {
                 writeLogLine("Archived previous log files: " + archivedCount);
             }
+        }
+
+        private static string[] GetArchiveCandidates(string targetDir, string currentLogPath)
+        {
+            string normalizedCurrentLogPath = SyncPathUtility.GetFullPath(currentLogPath);
+            string logDirectoryPath = SyncPathUtility.GetLogDirectoryPath(targetDir);
+            if (!Directory.Exists(logDirectoryPath))
+            {
+                return new string[0];
+            }
+
+            string[] logFilePaths = Directory.GetFiles(
+                logDirectoryPath,
+                SyncConfiguration.LogFilePrefix + "*" + SyncConfiguration.LogFileExtension);
+
+            if (logFilePaths.Length == 0)
+            {
+                return logFilePaths;
+            }
+
+            Array.Sort(logFilePaths, StringComparer.OrdinalIgnoreCase);
+
+            List<string> archiveCandidates = new List<string>();
+            foreach (string logFilePath in logFilePaths)
+            {
+                string fullLogPath = SyncPathUtility.GetFullPath(logFilePath);
+                if (string.Equals(fullLogPath, normalizedCurrentLogPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                archiveCandidates.Add(fullLogPath);
+            }
+
+            return archiveCandidates.ToArray();
         }
 
         private static bool TryArchiveSingleLog(string targetDir, string logPath, Action<string> writeLogLine)

@@ -16,6 +16,107 @@ namespace UpdateServer.Sync
 {
     internal sealed class RepositorySynchronizer
     {
+        private sealed class RepositorySyncContext
+        {
+            public RepositorySyncContext(
+                RepositoryTarget repository,
+                TreeResult treeResult,
+                RepositoryRemoteKind remoteKind,
+                string targetDir,
+                string stateRoot,
+                HashSet<string> protectedPaths,
+                string tempRootDirectoryPath)
+            {
+                Repository = repository;
+                TreeResult = treeResult;
+                RemoteKind = remoteKind;
+                TargetDir = targetDir;
+                StateRoot = stateRoot;
+                ProtectedPaths = protectedPaths;
+                TempRootDirectoryPath = tempRootDirectoryPath;
+                RepoStateDir = Path.Combine(stateRoot, repository.StateKey);
+                ManifestPath = Path.Combine(RepoStateDir, "tracked-files.txt");
+                StatePath = Path.Combine(RepoStateDir, "sync-state.json");
+                CachedFiles = new Dictionary<string, CachedFileState>(StringComparer.OrdinalIgnoreCase);
+                NewCachedFiles = new Dictionary<string, CachedFileState>(StringComparer.OrdinalIgnoreCase);
+                RemoteFiles = new Dictionary<string, TreeEntry>(StringComparer.OrdinalIgnoreCase);
+                ExcludedFiles = new Dictionary<string, TreeEntry>(StringComparer.OrdinalIgnoreCase);
+                SkippedConflictFiles = new List<string>();
+                NewManifest = new List<string>();
+                ExcludedRemovalResult = new ExcludedRemovalResult(0, 0);
+                DownloadResult = new DownloadResult(0, 0, 0);
+            }
+
+            public RepositoryTarget Repository { get; private set; }
+
+            public TreeResult TreeResult { get; private set; }
+
+            public RepositoryRemoteKind RemoteKind { get; private set; }
+
+            public string TargetDir { get; private set; }
+
+            public string StateRoot { get; private set; }
+
+            public HashSet<string> ProtectedPaths { get; private set; }
+
+            public string TempRootDirectoryPath { get; private set; }
+
+            public string RepoStateDir { get; private set; }
+
+            public string ManifestPath { get; private set; }
+
+            public string StatePath { get; private set; }
+
+            public ImportedState ImportedState { get; set; }
+
+            public Dictionary<string, CachedFileState> CachedFiles { get; set; }
+
+            public Dictionary<string, CachedFileState> NewCachedFiles { get; private set; }
+
+            public Dictionary<string, TreeEntry> RemoteFiles { get; private set; }
+
+            public Dictionary<string, TreeEntry> ExcludedFiles { get; private set; }
+
+            public List<string> SkippedConflictFiles { get; private set; }
+
+            public List<string> NewManifest { get; private set; }
+
+            public ExcludedRemovalResult ExcludedRemovalResult { get; set; }
+
+            public DownloadResult DownloadResult { get; set; }
+
+            public int Removed { get; set; }
+        }
+
+        private sealed class ExcludedRemovalResult
+        {
+            public ExcludedRemovalResult(int removed, int kept)
+            {
+                Removed = removed;
+                Kept = kept;
+            }
+
+            public int Removed { get; private set; }
+
+            public int Kept { get; private set; }
+        }
+
+        private sealed class DownloadResult
+        {
+            public DownloadResult(int added, int updated, int unchanged)
+            {
+                Added = added;
+                Updated = updated;
+                Unchanged = unchanged;
+            }
+
+            public int Added { get; private set; }
+
+            public int Updated { get; private set; }
+
+            public int Unchanged { get; private set; }
+        }
+
         public SyncSummary Synchronize(
             RepositoryTarget repository,
             TreeResult treeResult,
@@ -33,24 +134,59 @@ namespace UpdateServer.Sync
             if (protectedPaths == null) throw new ArgumentNullException(nameof(protectedPaths));
             if (string.IsNullOrWhiteSpace(tempRootDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempRootDirectoryPath));
 
-            string repoStateDir = Path.Combine(stateRoot, repository.StateKey);
-            Directory.CreateDirectory(repoStateDir);
-            string manifestPath = Path.Combine(repoStateDir, "tracked-files.txt");
-            string statePath = Path.Combine(repoStateDir, "sync-state.json");
+            RepositorySyncContext context = CreateContext(
+                repository,
+                treeResult,
+                remoteKind,
+                targetDir,
+                stateRoot,
+                protectedPaths,
+                tempRootDirectoryPath);
 
+            PrintRepositoryAccessReady(context);
+            ClassifyTreeEntries(context);
+            context.ExcludedRemovalResult = RemoveExcludedFilesWhenSafe(context);
+            LogSkippedConflictFiles(context);
+            context.DownloadResult = DownloadAndUpdateFiles(context);
+            context.Removed = RemoveUpstreamDeletedFiles(context);
+            PersistState(context);
+            return BuildSummary(context);
+        }
+
+        private static RepositorySyncContext CreateContext(
+            RepositoryTarget repository,
+            TreeResult treeResult,
+            RepositoryRemoteKind remoteKind,
+            string targetDir,
+            string stateRoot,
+            HashSet<string> protectedPaths,
+            string tempRootDirectoryPath)
+        {
+            RepositorySyncContext context = new RepositorySyncContext(
+                repository,
+                treeResult,
+                remoteKind,
+                targetDir,
+                stateRoot,
+                protectedPaths,
+                tempRootDirectoryPath);
+            Directory.CreateDirectory(context.RepoStateDir);
+            return context;
+        }
+
+        private static void PrintRepositoryAccessReady(RepositorySyncContext context)
+        {
             Console.WriteLine("[1/4] Repository access ready...");
-            Console.WriteLine(string.Format("       Branch: {0}", treeResult.Branch));
-            Console.WriteLine(string.Format("       Source: {0}", treeResult.Source));
+            Console.WriteLine(string.Format("       Branch: {0}", context.TreeResult.Branch));
+            Console.WriteLine(string.Format("       Source: {0}", context.TreeResult.Source));
+        }
 
-            ImportedState importedState = SyncStateStore.ImportSyncState(statePath, manifestPath);
-            Dictionary<string, CachedFileState> cachedFiles = importedState.Files;
-            Dictionary<string, CachedFileState> newCachedFiles = new Dictionary<string, CachedFileState>(StringComparer.OrdinalIgnoreCase);
+        private static void ClassifyTreeEntries(RepositorySyncContext context)
+        {
+            context.ImportedState = SyncStateStore.ImportSyncState(context.StatePath, context.ManifestPath);
+            context.CachedFiles = context.ImportedState.Files;
 
-            Dictionary<string, TreeEntry> remoteFiles = new Dictionary<string, TreeEntry>(StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, TreeEntry> excludedFiles = new Dictionary<string, TreeEntry>(StringComparer.OrdinalIgnoreCase);
-            List<string> skippedConflictFiles = new List<string>();
-
-            foreach (TreeEntry entry in treeResult.Tree)
+            foreach (TreeEntry entry in context.TreeResult.Tree)
             {
                 if (!string.Equals(entry.type, "blob", StringComparison.OrdinalIgnoreCase))
                 {
@@ -60,30 +196,33 @@ namespace UpdateServer.Sync
                 string relativePath = SyncPathUtility.NormalizeRelativePath(entry.path);
                 if (SyncPolicy.IsExcludedRootFile(relativePath))
                 {
-                    excludedFiles[relativePath] = entry;
+                    context.ExcludedFiles[relativePath] = entry;
                 }
                 else if (SyncPolicy.IsAlwaysSkippedFile(relativePath))
                 {
-                    skippedConflictFiles.Add(relativePath);
+                    context.SkippedConflictFiles.Add(relativePath);
                 }
                 else
                 {
-                    remoteFiles[relativePath] = entry;
+                    context.RemoteFiles[relativePath] = entry;
                 }
             }
+        }
 
+        private static ExcludedRemovalResult RemoveExcludedFilesWhenSafe(RepositorySyncContext context)
+        {
             Console.WriteLine("[2/4] Removing repo README/LICENSE when safe...");
-            int excludedRemoved = 0;
-            int excludedKept = 0;
-            List<string> sortedExcludedFiles = SyncPathUtility.SortKeys(excludedFiles.Keys);
+            int removed = 0;
+            int kept = 0;
+            List<string> sortedExcludedFiles = SyncPathUtility.SortKeys(context.ExcludedFiles.Keys);
             for (int index = 0; index < sortedExcludedFiles.Count; index++)
             {
                 string relativePath = sortedExcludedFiles[index];
-                TreeEntry entry = excludedFiles[relativePath];
-                string destinationPath = SyncPathUtility.GetTargetPathFromRelative(targetDir, relativePath);
+                TreeEntry entry = context.ExcludedFiles[relativePath];
+                string destinationPath = SyncPathUtility.GetTargetPathFromRelative(context.TargetDir, relativePath);
                 string destinationFull = SyncPathUtility.GetFullPath(destinationPath);
 
-                if (protectedPaths.Contains(destinationFull))
+                if (context.ProtectedPaths.Contains(destinationFull))
                 {
                     LoggingService.WriteLogOnlyLine("Skipped protected README/LICENSE file: " + relativePath);
                     continue;
@@ -94,9 +233,9 @@ namespace UpdateServer.Sync
                     continue;
                 }
 
-                SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
+                SafePathService.AssertSafeManagedPath(context.TargetDir, destinationPath);
 
-                bool matchesRemote = FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, cachedFiles);
+                bool matchesRemote = FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, context.CachedFiles);
                 if (!matchesRemote)
                 {
                     matchesRemote = FileStateService.TestLocalMatchesRemoteBlob(destinationPath, entry);
@@ -105,53 +244,60 @@ namespace UpdateServer.Sync
                 if (matchesRemote)
                 {
                     File.Delete(destinationPath);
-                    SafePathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
-                    excludedRemoved++;
+                    SafePathService.RemoveEmptyParentDirectories(destinationPath, context.TargetDir);
+                    removed++;
                     LoggingService.WriteLogOnlyLine("Removed README/LICENSE file: " + relativePath);
                 }
                 else
                 {
-                    excludedKept++;
+                    kept++;
                     LoggingService.WriteLogOnlyLine("Kept local README/LICENSE file: " + relativePath);
                 }
             }
 
-            foreach (string relativePath in SyncPathUtility.SortKeys(skippedConflictFiles))
+            return new ExcludedRemovalResult(removed, kept);
+        }
+
+        private static void LogSkippedConflictFiles(RepositorySyncContext context)
+        {
+            foreach (string relativePath in SyncPathUtility.SortKeys(context.SkippedConflictFiles))
             {
                 LoggingService.WriteLogOnlyLine("Skipped compile-only conflict file: " + relativePath);
             }
+        }
 
+        private static DownloadResult DownloadAndUpdateFiles(RepositorySyncContext context)
+        {
             Console.WriteLine("[3/4] Downloading and updating files...");
             int added = 0;
             int updated = 0;
             int unchanged = 0;
-            List<string> newManifest = new List<string>();
-            List<string> sortedRemoteFiles = SyncPathUtility.SortKeys(remoteFiles.Keys);
+            List<string> sortedRemoteFiles = SyncPathUtility.SortKeys(context.RemoteFiles.Keys);
             using (ProgressDisplay progress = ConsoleUiHelper.CreateProgressDisplay())
             {
                 for (int index = 0; index < sortedRemoteFiles.Count; index++)
                 {
                     string relativePath = sortedRemoteFiles[index];
-                    TreeEntry entry = remoteFiles[relativePath];
-                    string destinationPath = SyncPathUtility.GetTargetPathFromRelative(targetDir, relativePath);
+                    TreeEntry entry = context.RemoteFiles[relativePath];
+                    string destinationPath = SyncPathUtility.GetTargetPathFromRelative(context.TargetDir, relativePath);
                     string destinationFull = SyncPathUtility.GetFullPath(destinationPath);
                     progress.Update(
                         ConsoleUiHelper.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | checking", added, updated, unchanged)),
                         ConsoleUiHelper.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
 
-                    if (protectedPaths.Contains(destinationFull))
+                    if (context.ProtectedPaths.Contains(destinationFull))
                     {
                         LoggingService.WriteLogOnlyLine("Skipped protected updater file: " + relativePath);
                         continue;
                     }
 
-                    newManifest.Add(relativePath);
-                    SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
+                    context.NewManifest.Add(relativePath);
+                    SafePathService.AssertSafeManagedPath(context.TargetDir, destinationPath);
                     SafePathService.AssertNoDirectoryConflict(destinationPath);
 
-                    if (FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, cachedFiles))
+                    if (FileStateService.TestCachedRemoteMatch(relativePath, destinationPath, entry, context.CachedFiles))
                     {
-                        newCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
+                        context.NewCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
                         unchanged++;
                         LoggingService.WriteLogOnlyLine("Cached match: " + relativePath);
                         continue;
@@ -160,7 +306,7 @@ namespace UpdateServer.Sync
                     bool existed = File.Exists(destinationPath);
                     if (existed && FileStateService.TestLocalMatchesRemoteBlob(destinationPath, entry))
                     {
-                        newCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
+                        context.NewCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
                         unchanged++;
                         LoggingService.WriteLogOnlyLine("Verified match: " + relativePath);
                         continue;
@@ -169,8 +315,8 @@ namespace UpdateServer.Sync
                     progress.Update(
                         ConsoleUiHelper.FormatProgressStatus("[3/4] Files", index + 1, sortedRemoteFiles.Count, string.Format("added: {0} updated: {1} unchanged: {2} | downloading", added, updated, unchanged)),
                         ConsoleUiHelper.FormatProgressBarLine(index + 1, sortedRemoteFiles.Count));
-                    DownloadRemoteFile(repository, treeResult.Branch, entry, tempRootDirectoryPath, destinationPath, remoteKind);
-                    newCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
+                    DownloadRemoteFile(context.Repository, context.TreeResult.Branch, entry, context.TempRootDirectoryPath, destinationPath, context.RemoteKind);
+                    context.NewCachedFiles[relativePath] = FileStateService.GetLocalFileState(destinationPath, entry.sha);
 
                     if (existed)
                     {
@@ -189,14 +335,19 @@ namespace UpdateServer.Sync
                     ConsoleUiHelper.FormatProgressBarLine(sortedRemoteFiles.Count, sortedRemoteFiles.Count));
             }
 
+            return new DownloadResult(added, updated, unchanged);
+        }
+
+        private static int RemoveUpstreamDeletedFiles(RepositorySyncContext context)
+        {
             Console.WriteLine("[4/4] Removing files deleted upstream...");
-            List<string> oldManifest = new List<string>(importedState.TrackedFiles);
-            if (oldManifest.Count == 0 && File.Exists(manifestPath))
+            List<string> oldManifest = new List<string>(context.ImportedState.TrackedFiles);
+            if (oldManifest.Count == 0 && File.Exists(context.ManifestPath))
             {
-                oldManifest = SyncPathUtility.ReadManifest(manifestPath);
+                oldManifest = SyncPathUtility.ReadManifest(context.ManifestPath);
             }
 
-            HashSet<string> remoteSet = new HashSet<string>(newManifest, StringComparer.OrdinalIgnoreCase);
+            HashSet<string> remoteSet = new HashSet<string>(context.NewManifest, StringComparer.OrdinalIgnoreCase);
             int removed = 0;
             for (int index = 0; index < oldManifest.Count; index++)
             {
@@ -211,10 +362,10 @@ namespace UpdateServer.Sync
                     continue;
                 }
 
-                string destinationPath = SyncPathUtility.GetTargetPathFromRelative(targetDir, relativePath);
+                string destinationPath = SyncPathUtility.GetTargetPathFromRelative(context.TargetDir, relativePath);
                 string destinationFull = SyncPathUtility.GetFullPath(destinationPath);
 
-                if (protectedPaths.Contains(destinationFull))
+                if (context.ProtectedPaths.Contains(destinationFull))
                 {
                     LoggingService.WriteLogOnlyLine("Skipped protected stale file: " + relativePath);
                     continue;
@@ -225,25 +376,33 @@ namespace UpdateServer.Sync
                     continue;
                 }
 
-                SafePathService.AssertSafeManagedPath(targetDir, destinationPath);
+                SafePathService.AssertSafeManagedPath(context.TargetDir, destinationPath);
                 File.Delete(destinationPath);
-                SafePathService.RemoveEmptyParentDirectories(destinationPath, targetDir);
+                SafePathService.RemoveEmptyParentDirectories(destinationPath, context.TargetDir);
                 removed++;
                 LoggingService.WriteLogOnlyLine("Removed upstream-deleted file: " + relativePath);
             }
 
-            List<string> sortedManifest = newManifest.OrderBy(item => item, StringComparer.OrdinalIgnoreCase).ToList();
-            File.WriteAllLines(manifestPath, sortedManifest.ToArray(), new UTF8Encoding(false));
-            SyncStateStore.ExportSyncState(statePath, sortedManifest, newCachedFiles);
+            return removed;
+        }
 
+        private static void PersistState(RepositorySyncContext context)
+        {
+            List<string> sortedManifest = context.NewManifest.OrderBy(item => item, StringComparer.OrdinalIgnoreCase).ToList();
+            File.WriteAllLines(context.ManifestPath, sortedManifest.ToArray(), new UTF8Encoding(false));
+            SyncStateStore.ExportSyncState(context.StatePath, sortedManifest, context.NewCachedFiles);
+        }
+
+        private static SyncSummary BuildSummary(RepositorySyncContext context)
+        {
             return new SyncSummary
             {
-                Added = added,
-                Updated = updated,
-                Removed = removed,
-                ExcludedRemoved = excludedRemoved,
-                Unchanged = unchanged,
-                SkippedConflictFiles = new HashSet<string>(skippedConflictFiles, StringComparer.OrdinalIgnoreCase)
+                Added = context.DownloadResult.Added,
+                Updated = context.DownloadResult.Updated,
+                Removed = context.Removed,
+                ExcludedRemoved = context.ExcludedRemovalResult.Removed,
+                Unchanged = context.DownloadResult.Unchanged,
+                SkippedConflictFiles = new HashSet<string>(context.SkippedConflictFiles, StringComparer.OrdinalIgnoreCase)
             };
         }
 
