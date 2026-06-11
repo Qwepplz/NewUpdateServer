@@ -19,7 +19,8 @@ namespace UpdateServer.Sync
         return fileName.StartsWith("README", StringComparison.OrdinalIgnoreCase)
             || fileName.StartsWith("LICENSE", StringComparison.OrdinalIgnoreCase)
             || fileName.StartsWith("LICENCE", StringComparison.OrdinalIgnoreCase)
-            || fileName.StartsWith("LECENSE", StringComparison.OrdinalIgnoreCase);
+            || fileName.StartsWith("LECENSE", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith(".gitattributes", StringComparison.OrdinalIgnoreCase);
     }
 
         internal static bool IsAlwaysSkippedFile(string relativePath)
