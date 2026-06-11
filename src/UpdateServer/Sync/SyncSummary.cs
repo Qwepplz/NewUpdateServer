@@ -5,12 +5,22 @@ namespace UpdateServer.Sync
 {
     internal sealed class SyncSummary
     {
-        public int Added;
-        public int Updated;
-        public int Removed;
-        public int ExcludedRemoved;
-        public int Unchanged;
-        public HashSet<string> SkippedConflictFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public SyncSummary()
+        {
+            this.SkippedConflictFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public int Added { get; set; }
+
+        public int Updated { get; set; }
+
+        public int Removed { get; set; }
+
+        public int ExcludedRemoved { get; set; }
+
+        public int Unchanged { get; set; }
+
+        public HashSet<string> SkippedConflictFiles { get; private set; }
 
         public void Merge(SyncSummary other)
         {
@@ -19,15 +29,15 @@ namespace UpdateServer.Sync
                 return;
             }
 
-            Added += other.Added;
-            Updated += other.Updated;
-            Removed += other.Removed;
-            ExcludedRemoved += other.ExcludedRemoved;
-            Unchanged += other.Unchanged;
+            this.Added += other.Added;
+            this.Updated += other.Updated;
+            this.Removed += other.Removed;
+            this.ExcludedRemoved += other.ExcludedRemoved;
+            this.Unchanged += other.Unchanged;
 
             foreach (string path in other.SkippedConflictFiles)
             {
-                SkippedConflictFiles.Add(path);
+                this.SkippedConflictFiles.Add(path);
             }
         }
     }

@@ -14,8 +14,22 @@ namespace UpdateServer.ConsoleUi
 
         public ProgressDisplay(TextWriter writer, bool refresh)
         {
+            if (writer == null) throw new ArgumentNullException(nameof(writer));
+
             outputWriter = writer;
             canRefresh = refresh;
+        }
+
+        public static bool CanRefresh()
+        {
+            try
+            {
+                return Environment.UserInteractive && !Console.IsOutputRedirected;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public void Update(string status, string detail)

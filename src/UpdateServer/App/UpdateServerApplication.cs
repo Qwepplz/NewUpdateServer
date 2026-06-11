@@ -1,82 +1,138 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
 using UpdateServer.Config;
 using UpdateServer.ConsoleUi;
-using ConsoleUiHelper = UpdateServer.ConsoleUi.ConsoleUi;
 using UpdateServer.FileSystem;
 using UpdateServer.Logging;
+using UpdateServer.Remote;
+using UpdateServer.Remote.Models;
+using UpdateServer.Security;
+using UpdateServer.State;
 using UpdateServer.Sync;
 
 namespace UpdateServer.App
 {
     internal sealed class UpdateServerApplication
     {
-        private readonly RepositorySynchronizer repositorySynchronizer = new RepositorySynchronizer();
+        private readonly StartupMenu startupMenu;
+        private readonly ISafePathService safePathService;
+        private readonly ISyncStateStore syncStateStore;
+        private readonly IRemoteRepositoryClient remoteRepositoryClient;
+        private readonly IRepositorySynchronizer repositorySynchronizer;
+        private LogSession activeLog;
 
         private sealed class RunContext
         {
-            private RunContext(string targetDir, string targetHash, string tempRootDirectoryPath, string stateRoot, HashSet<string> protectedPaths)
+            private RunContext(string targetDirectoryPath, string targetHash, string stateRoot, HashSet<string> protectedPaths)
             {
-                TargetDir = targetDir;
-                TargetHash = targetHash;
-                TempRootDirectoryPath = tempRootDirectoryPath;
-                StateRoot = stateRoot;
-                ProtectedPaths = protectedPaths;
+                this.TargetDirectoryPath = targetDirectoryPath;
+                this.TargetHash = targetHash;
+                this.StateRoot = stateRoot;
+                this.ProtectedPaths = protectedPaths;
             }
 
-            public string TargetDir { get; private set; }
+            internal string TargetDirectoryPath { get; private set; }
 
-            public string TargetHash { get; private set; }
+            internal string TargetHash { get; private set; }
 
-            public string TempRootDirectoryPath { get; private set; }
+            internal string StateRoot { get; private set; }
 
-            public string StateRoot { get; private set; }
+            internal HashSet<string> ProtectedPaths { get; private set; }
 
-            public HashSet<string> ProtectedPaths { get; private set; }
+            internal string TempRootDirectoryPath { get; private set; }
 
-            public static RunContext Create(string targetDir)
+            internal static RunContext Create(string targetDirectoryPath, ISafePathService safePathService, ISyncStateStore syncStateStore)
             {
-                string targetHash = SyncPathUtility.GetTargetHash(targetDir);
-                HashSet<string> protectedPaths = SafePathService.BuildProtectedPathSet(targetDir);
-                string tempRootDirectoryPath = Path.Combine(Path.GetTempPath(), "PugGet5Sync_" + Guid.NewGuid().ToString("N"));
-                string stateRoot = SyncPathUtility.GetStateDirectory(targetDir, targetHash);
+                if (safePathService == null) throw new ArgumentNullException(nameof(safePathService));
+                if (syncStateStore == null) throw new ArgumentNullException(nameof(syncStateStore));
 
-                return new RunContext(targetDir, targetHash, tempRootDirectoryPath, stateRoot, protectedPaths);
+                string normalizedTargetDirectoryPath = safePathService.GetFullPath(targetDirectoryPath);
+                string targetHash = syncStateStore.GetTargetHash(normalizedTargetDirectoryPath);
+                HashSet<string> protectedPaths = safePathService.BuildProtectedPathSet(normalizedTargetDirectoryPath);
+                string stateRoot = syncStateStore.GetStateRoot(normalizedTargetDirectoryPath, targetHash);
+
+                return new RunContext(normalizedTargetDirectoryPath, targetHash, stateRoot, protectedPaths);
             }
+
+            internal void CreateTempRootDirectory()
+            {
+                this.TempRootDirectoryPath = Path.Combine(Path.GetTempPath(), SyncConfiguration.TempRootDirectoryPrefix + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(this.TempRootDirectoryPath);
+            }
+        }
+
+        public UpdateServerApplication()
+        {
+            ISafePathService safePathService = new SafePathService();
+            IGitBlobHasher gitBlobHasher = new GitBlobHasher();
+            IRepositoryUrlBuilder repositoryUrlBuilder = new RepositoryUrlBuilder();
+            IRemoteRepositoryClient remoteRepositoryClient = new RemoteRepositoryClient(repositoryUrlBuilder, gitBlobHasher);
+            IAtomicFileWriter atomicFileWriter = new AtomicFileWriter();
+            ISyncStateStore syncStateStore = new SyncStateStore(safePathService);
+            IRepositorySynchronizer repositorySynchronizer = new RepositorySynchronizer(
+                remoteRepositoryClient,
+                safePathService,
+                atomicFileWriter,
+                syncStateStore,
+                gitBlobHasher);
+
+            this.startupMenu = new StartupMenu();
+            this.safePathService = safePathService;
+            this.syncStateStore = syncStateStore;
+            this.remoteRepositoryClient = remoteRepositoryClient;
+            this.repositorySynchronizer = repositorySynchronizer;
+        }
+
+        public UpdateServerApplication(
+            StartupMenu startupMenu,
+            ISafePathService safePathService,
+            ISyncStateStore syncStateStore,
+            IRemoteRepositoryClient remoteRepositoryClient,
+            IRepositorySynchronizer repositorySynchronizer)
+        {
+            if (startupMenu == null) throw new ArgumentNullException(nameof(startupMenu));
+            if (safePathService == null) throw new ArgumentNullException(nameof(safePathService));
+            if (syncStateStore == null) throw new ArgumentNullException(nameof(syncStateStore));
+            if (remoteRepositoryClient == null) throw new ArgumentNullException(nameof(remoteRepositoryClient));
+            if (repositorySynchronizer == null) throw new ArgumentNullException(nameof(repositorySynchronizer));
+
+            this.startupMenu = startupMenu;
+            this.safePathService = safePathService;
+            this.syncStateStore = syncStateStore;
+            this.remoteRepositoryClient = remoteRepositoryClient;
+            this.repositorySynchronizer = repositorySynchronizer;
         }
 
         public int Run(string[] args)
         {
-            string targetDir = SyncPathUtility.GetFullPath(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string targetDirectoryPath = this.safePathService.GetFullPath(
+                AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+            RunContext context = null;
             SyncMutexHandle mutexHandle = null;
-            RunContext runContext = null;
-            LoggingService.TryInitialize(targetDir, args);
+            this.TryInitializeLogging(targetDirectoryPath, args);
 
             try
             {
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-
-                List<RepositoryTarget> selectedRepositories = ConsoleUiHelper.ShowStartupPrompt(targetDir);
+                List<RepositoryTarget> selectedRepositories = this.startupMenu.ShowStartupPrompt(targetDirectoryPath);
                 if (selectedRepositories.Count == 0)
                 {
-                    ConsoleUiHelper.PauseBeforeExit();
-                    return 0;
+                    return this.ExitWithoutSynchronization();
                 }
 
-                runContext = RunContext.Create(targetDir);
-                mutexHandle = SyncMutexHandle.Acquire(runContext.TargetHash);
-                ReportStaleArtifacts(runContext.TargetDir, runContext.ProtectedPaths);
-                Directory.CreateDirectory(runContext.TempRootDirectoryPath);
+                context = RunContext.Create(targetDirectoryPath, this.safePathService, this.syncStateStore);
+                mutexHandle = SyncMutexHandle.Acquire(context.TargetHash);
+                this.ReportStaleArtifacts(context);
+                context.CreateTempRootDirectory();
 
-                Tuple<SyncSummary, int> synchronizationResult = SynchronizeSelectedRepositories(selectedRepositories, runContext);
-
-                return CompleteRun(synchronizationResult.Item1, synchronizationResult.Item2);
+                int synchronizedRepositoryCount;
+                SyncSummary totalSummary = this.SynchronizeSelectedRepositories(selectedRepositories, context, out synchronizedRepositoryCount);
+                return this.CompleteRun(totalSummary, synchronizedRepositoryCount);
             }
             catch (Exception exception)
             {
-                return FailRun(exception);
+                return this.FailRun(exception);
             }
             finally
             {
@@ -85,134 +141,228 @@ namespace UpdateServer.App
                     mutexHandle.Dispose();
                 }
 
-                CleanupRun(runContext);
+                CleanupRun(context);
+                this.ShutdownLogging();
             }
         }
 
-        private static void ReportStaleArtifacts(string targetDir, HashSet<string> protectedPaths)
+        private int ExitWithoutSynchronization()
         {
-            int staleArtifactsRemoved = SafePathService.RemoveStaleUpdaterArtifacts(targetDir, protectedPaths);
+            this.startupMenu.PauseBeforeExit();
+            return 0;
+        }
+
+        private void ReportStaleArtifacts(RunContext context)
+        {
+            int staleArtifactsRemoved = this.safePathService.RemoveStaleUpdaterArtifacts(context.TargetDirectoryPath, context.ProtectedPaths);
             if (staleArtifactsRemoved > 0)
             {
                 Console.WriteLine(string.Format("Cleaned leftover temp files: {0}", staleArtifactsRemoved));
             }
         }
 
-        private Tuple<SyncSummary, int> SynchronizeSelectedRepositories(List<RepositoryTarget> selectedRepositories, RunContext runContext)
+        private SyncSummary SynchronizeSelectedRepositories(List<RepositoryTarget> selectedRepositories, RunContext context, out int synchronizedRepositoryCount)
         {
-            string stateRoot = runContext.StateRoot;
             SyncSummary totalSummary = new SyncSummary();
-            int synchronizedRepositoryCount = 0;
+            synchronizedRepositoryCount = 0;
 
             foreach (RepositoryTarget repository in selectedRepositories)
             {
                 Console.WriteLine();
                 Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
 
-                UpdateServer.Remote.Models.TreeResult preparedTree;
-                UpdateServer.Remote.RepositoryRemoteKind remoteKind;
-                if (!TryPrepareRepositoryTree(repository, runContext.TempRootDirectoryPath, out preparedTree, out remoteKind))
+                TreeResult preparedTree;
+                RepositoryRemoteKind remoteKind;
+                if (!this.TryPrepareRepositoryTree(repository, context.TempRootDirectoryPath, out preparedTree, out remoteKind))
                 {
                     continue;
                 }
 
-                totalSummary.Merge(repositorySynchronizer.Synchronize(repository, preparedTree, remoteKind, runContext.TargetDir, stateRoot, runContext.ProtectedPaths, runContext.TempRootDirectoryPath));
+                totalSummary.Merge(this.repositorySynchronizer.Synchronize(
+                    repository,
+                    preparedTree,
+                    remoteKind,
+                    context.TargetDirectoryPath,
+                    context.StateRoot,
+                    context.ProtectedPaths,
+                    context.TempRootDirectoryPath,
+                    this.activeLog));
                 synchronizedRepositoryCount++;
             }
 
-            return Tuple.Create(totalSummary, synchronizedRepositoryCount);
+            return totalSummary;
         }
 
-        private static int CompleteRun(SyncSummary totalSummary, int synchronizedRepositoryCount)
+        private int CompleteRun(SyncSummary totalSummary, int synchronizedRepositoryCount)
         {
             Console.WriteLine();
             if (synchronizedRepositoryCount == 0)
             {
                 Console.WriteLine("No repositories were synchronized.");
-                ConsoleUiHelper.PauseBeforeExit();
+                this.startupMenu.PauseBeforeExit();
                 return 0;
             }
 
             Console.WriteLine(synchronizedRepositoryCount > 1 ? "Selected syncs complete." : "Sync complete.");
-            PrintSyncSummary(totalSummary);
-            ConsoleUiHelper.PauseBeforeExit();
+            Console.WriteLine(string.Format("Added: {0}", totalSummary.Added));
+            Console.WriteLine(string.Format("Updated: {0}", totalSummary.Updated));
+            Console.WriteLine(string.Format("Removed: {0}", totalSummary.Removed));
+            Console.WriteLine(string.Format("Unchanged: {0}", totalSummary.Unchanged));
+            this.startupMenu.PauseBeforeExit();
             return 0;
         }
 
-        private static int FailRun(Exception exception)
+        private int FailRun(Exception exception)
         {
             Console.WriteLine();
             Console.WriteLine("Sync failed.");
             Console.WriteLine(exception.Message);
-            LoggingService.LogException(exception);
-            ConsoleUiHelper.PauseBeforeExit();
+            this.LogException(exception);
+            this.startupMenu.PauseBeforeExit();
             return 1;
         }
 
-        private static void CleanupRun(RunContext runContext)
+        private static void CleanupRun(RunContext context)
         {
-            if (runContext != null && !string.IsNullOrWhiteSpace(runContext.TempRootDirectoryPath) && Directory.Exists(runContext.TempRootDirectoryPath))
+            if (context == null || string.IsNullOrWhiteSpace(context.TempRootDirectoryPath) || !Directory.Exists(context.TempRootDirectoryPath))
             {
-                try
-                {
-                    Directory.Delete(runContext.TempRootDirectoryPath, true);
-                }
-                catch
-                {
-                }
+                return;
             }
 
-            LoggingService.Shutdown();
+            try
+            {
+                Directory.Delete(context.TempRootDirectoryPath, true);
+            }
+            catch
+            {
+            }
         }
 
-        private static bool TryPrepareRepositoryTree(
-            RepositoryTarget repository,
-            string tempRootDirectoryPath,
-            out UpdateServer.Remote.Models.TreeResult treeResult,
-            out UpdateServer.Remote.RepositoryRemoteKind remoteKind)
+        private bool TryPrepareRepositoryTree(RepositoryTarget repository, string tempRootDirectoryPath, out TreeResult treeResult, out RepositoryRemoteKind remoteKind)
         {
             if (repository == null) throw new ArgumentNullException(nameof(repository));
             if (string.IsNullOrWhiteSpace(tempRootDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(tempRootDirectoryPath));
 
             treeResult = null;
-            remoteKind = UpdateServer.Remote.RepositoryRemoteKind.Github;
+            remoteKind = RepositoryRemoteKind.Github;
 
             try
             {
-                treeResult = UpdateServer.Remote.RemoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
-                LoggingService.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": GitHub.");
+                treeResult = this.remoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
+                this.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": GitHub.");
                 return true;
             }
             catch (Exception githubException)
             {
-                LoggingService.WriteLogOnlyLine("GitHub sync preparation failed for " + repository.DisplayName + ":");
-                LoggingService.WriteLogOnlyLine(githubException.ToString());
+                this.WriteLogOnlyLine("GitHub sync preparation failed for " + repository.DisplayName + ":");
+                this.WriteLogOnlyLine(githubException.ToString());
 
                 if (!repository.HasMirror)
                 {
                     throw;
                 }
 
-                if (!ConsoleUiHelper.ShowMirrorConfirmation(repository, githubException.Message))
+                if (!this.startupMenu.ShowMirrorConfirmation(repository, githubException.Message))
                 {
                     Console.WriteLine(string.Format("Skipped sync for {0}.", repository.DisplayName));
-                    LoggingService.WriteLogOnlyLine("Mirror sync canceled by user for " + repository.DisplayName + ".");
+                    this.WriteLogOnlyLine("Mirror sync canceled by user for " + repository.DisplayName + ".");
                     return false;
                 }
 
-                remoteKind = UpdateServer.Remote.RepositoryRemoteKind.Mirror;
-                treeResult = UpdateServer.Remote.RemoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
-                LoggingService.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": Gitee mirror.");
+                remoteKind = RepositoryRemoteKind.Mirror;
+                treeResult = this.remoteRepositoryClient.PrepareRepositoryTree(repository, tempRootDirectoryPath, remoteKind);
+                this.WriteLogOnlyLine("Selected remote source for " + repository.DisplayName + ": Gitee mirror.");
                 return true;
             }
         }
 
-        private static void PrintSyncSummary(SyncSummary summary)
+        private void TryInitializeLogging(string targetDirectoryPath, string[] args)
         {
-            Console.WriteLine(string.Format("Added: {0}", summary.Added));
-            Console.WriteLine(string.Format("Updated: {0}", summary.Updated));
-            Console.WriteLine(string.Format("Removed: {0}", summary.Removed));
-            Console.WriteLine(string.Format("Unchanged: {0}", summary.Unchanged));
+            if (this.activeLog != null)
+            {
+                return;
+            }
+
+            try
+            {
+                this.activeLog = LogSession.Create(targetDirectoryPath, this.safePathService);
+                this.activeLog.Attach();
+                this.activeLog.WriteSessionStart(targetDirectoryPath, args);
+                Console.WriteLine(string.Format("Log file: {0}", this.activeLog.CurrentLogPath));
+                LogArchiveService.TryArchivePreviousLogs(
+                    targetDirectoryPath,
+                    this.activeLog.CurrentLogPath,
+                    this.safePathService,
+                    this.activeLog.WriteLogOnlyLine);
+            }
+            catch
+            {
+                if (this.activeLog != null)
+                {
+                    try
+                    {
+                        this.activeLog.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
+                    this.activeLog = null;
+                }
+            }
+        }
+
+        private void ShutdownLogging()
+        {
+            if (this.activeLog == null)
+            {
+                return;
+            }
+
+            try
+            {
+                this.activeLog.Dispose();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                this.activeLog = null;
+            }
+        }
+
+        private void LogException(Exception exception)
+        {
+            if (this.activeLog == null || exception == null)
+            {
+                return;
+            }
+
+            try
+            {
+                this.activeLog.WriteLogOnlyLine("Unhandled exception:");
+                this.activeLog.WriteLogOnlyLine(exception.ToString());
+            }
+            catch
+            {
+            }
+        }
+
+        private void WriteLogOnlyLine(string message)
+        {
+            if (this.activeLog == null || string.IsNullOrWhiteSpace(message))
+            {
+                return;
+            }
+
+            try
+            {
+                this.activeLog.WriteLogOnlyLine(message);
+            }
+            catch
+            {
+            }
         }
     }
 }

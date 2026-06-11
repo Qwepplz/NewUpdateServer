@@ -1,77 +1,19 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using UpdateServer.Config;
-using UpdateServer.Logging;
-using UpdateServer.Sync;
 
 namespace UpdateServer.ConsoleUi
 {
-    internal static class ConsoleUi
+    internal sealed class StartupMenu
     {
-        internal static string FormatProgressStatus(string stageLabel, int current, int total, string metrics)
+        public List<RepositoryTarget> ShowStartupPrompt(string targetDirectoryPath)
         {
-            return string.Format("{0} {1}/{2} | {3}", stageLabel, Math.Max(0, current), Math.Max(0, total), metrics);
-        }
+            if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
 
-        internal static string FormatProgressBarLine(int current, int total)
-        {
-            int safeCurrent = Math.Max(0, current);
-            int safeTotal = Math.Max(0, total);
-            string suffix = string.Format(" {0}/{1}", safeCurrent, safeTotal);
-            int width = GetProgressBarWidth(suffix.Length);
-            return BuildProgressBar(safeCurrent, safeTotal, width) + suffix;
-        }
-
-        private static string BuildProgressBar(int current, int total, int width)
-        {
-            int safeWidth = Math.Max(8, width);
-            int safeCurrent = Math.Max(0, current);
-            int safeTotal = Math.Max(0, total);
-            int filled = safeTotal <= 0
-                ? safeWidth
-                : Math.Min(safeWidth, (int)Math.Round((double)Math.Min(safeCurrent, safeTotal) * safeWidth / safeTotal, MidpointRounding.AwayFromZero));
-
-            return "[" + new string('#', filled) + new string('-', safeWidth - filled) + "]";
-        }
-
-        private static int GetProgressBarWidth(int suffixLength)
-        {
-            try
-            {
-                int lineWidth = Math.Max(20, Console.BufferWidth - 1);
-                return Math.Max(8, lineWidth - suffixLength - 2);
-            }
-            catch
-            {
-                return 48;
-            }
-        }
-
-        internal static ProgressDisplay CreateProgressDisplay()
-        {
-            TextWriter outputWriter = LoggingService.ConsoleWriter;
-            return new ProgressDisplay(outputWriter, CanRefreshProgressDisplay());
-        }
-
-        private static bool CanRefreshProgressDisplay()
-        {
-            try
-            {
-                return Environment.UserInteractive && !Console.IsOutputRedirected;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        internal static List<RepositoryTarget> ShowStartupPrompt(string targetDir)
-        {
             Console.WriteLine("Pug/Get5 updater");
             Console.WriteLine();
             Console.WriteLine("Target folder:");
-            Console.WriteLine(targetDir);
+            Console.WriteLine(targetDirectoryPath);
             Console.WriteLine();
             Console.WriteLine("This will sync upstream changes into the current folder.");
             Console.WriteLine("Choose what to sync:");
@@ -83,32 +25,22 @@ namespace UpdateServer.ConsoleUi
 
             try
             {
-                ConsoleKeyInfo keyInfo;
                 while (true)
                 {
-                    keyInfo = Console.ReadKey(true);
+                    ConsoleKeyInfo keyInfo = Console.ReadKey(true);
                     if (keyInfo.Key == ConsoleKey.D1 || keyInfo.Key == ConsoleKey.NumPad1)
                     {
-                        Console.WriteLine("Selected: pug");
-                        Console.WriteLine("Starting sync...");
-                        Console.WriteLine();
-                        return new List<RepositoryTarget> { RepositoryCatalog.PugRepository };
+                        return SelectRepositories("pug", new List<RepositoryTarget> { RepositoryCatalog.PugRepository });
                     }
 
                     if (keyInfo.Key == ConsoleKey.D2 || keyInfo.Key == ConsoleKey.NumPad2)
                     {
-                        Console.WriteLine("Selected: get5");
-                        Console.WriteLine("Starting sync...");
-                        Console.WriteLine();
-                        return new List<RepositoryTarget> { RepositoryCatalog.Get5Repository };
+                        return SelectRepositories("get5", new List<RepositoryTarget> { RepositoryCatalog.Get5Repository });
                     }
 
                     if (keyInfo.Key == ConsoleKey.D3 || keyInfo.Key == ConsoleKey.NumPad3)
                     {
-                        Console.WriteLine("Selected: all");
-                        Console.WriteLine("Starting sync...");
-                        Console.WriteLine();
-                        return new List<RepositoryTarget>(RepositoryCatalog.AllRepositories);
+                        return SelectRepositories("all", new List<RepositoryTarget>(RepositoryCatalog.AllRepositories));
                     }
 
                     if (keyInfo.Key == ConsoleKey.Escape)
@@ -124,7 +56,7 @@ namespace UpdateServer.ConsoleUi
             }
         }
 
-        internal static bool ShowMirrorConfirmation(RepositoryTarget repository, string githubFailureMessage)
+        public bool ShowMirrorConfirmation(RepositoryTarget repository, string githubFailureMessage)
         {
             if (repository == null) throw new ArgumentNullException(nameof(repository));
 
@@ -164,7 +96,7 @@ namespace UpdateServer.ConsoleUi
             }
         }
 
-        internal static void PauseBeforeExit()
+        public void PauseBeforeExit()
         {
             try
             {
@@ -179,6 +111,14 @@ namespace UpdateServer.ConsoleUi
             catch
             {
             }
+        }
+
+        private static List<RepositoryTarget> SelectRepositories(string selectionName, List<RepositoryTarget> repositories)
+        {
+            Console.WriteLine("Selected: " + selectionName);
+            Console.WriteLine("Starting sync...");
+            Console.WriteLine();
+            return repositories;
         }
     }
 }

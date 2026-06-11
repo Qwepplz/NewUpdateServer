@@ -11,19 +11,21 @@ namespace UpdateServer.Logging
     {
         private static readonly ILogArchiveCompressor Compressor = new ManagedSevenZipLogArchiveCompressor();
 
-        internal static void TryArchivePreviousLogs(string targetDir, string currentLogPath, Action<string> writeLogLine)
+        internal static void TryArchivePreviousLogs(
+            string targetDirectoryPath,
+            string currentLogPath,
+            ISafePathService safePathService,
+            Action<string> writeLogLine)
         {
-            if (string.IsNullOrWhiteSpace(targetDir) || string.IsNullOrWhiteSpace(currentLogPath) || writeLogLine == null)
+            if (!CanArchivePreviousLogs(targetDirectoryPath, currentLogPath, safePathService, writeLogLine))
             {
                 return;
             }
 
-            string[] archiveCandidates = GetArchiveCandidates(targetDir, currentLogPath);
-
             int archivedCount = 0;
-            foreach (string logFilePath in archiveCandidates)
+            foreach (string logFilePath in GetArchiveCandidates(targetDirectoryPath, currentLogPath, safePathService))
             {
-                if (TryArchiveSingleLog(targetDir, logFilePath, writeLogLine))
+                if (TryArchiveSingleLog(targetDirectoryPath, logFilePath, safePathService, writeLogLine))
                 {
                     archivedCount++;
                 }
@@ -35,10 +37,25 @@ namespace UpdateServer.Logging
             }
         }
 
-        private static string[] GetArchiveCandidates(string targetDir, string currentLogPath)
+        private static bool CanArchivePreviousLogs(
+            string targetDirectoryPath,
+            string currentLogPath,
+            ISafePathService safePathService,
+            Action<string> writeLogLine)
         {
-            string normalizedCurrentLogPath = SyncPathUtility.GetFullPath(currentLogPath);
-            string logDirectoryPath = SyncPathUtility.GetLogDirectoryPath(targetDir);
+            return !string.IsNullOrWhiteSpace(targetDirectoryPath)
+                && !string.IsNullOrWhiteSpace(currentLogPath)
+                && safePathService != null
+                && writeLogLine != null;
+        }
+
+        private static string[] GetArchiveCandidates(
+            string targetDirectoryPath,
+            string currentLogPath,
+            ISafePathService safePathService)
+        {
+            string normalizedCurrentLogPath = safePathService.GetFullPath(currentLogPath);
+            string logDirectoryPath = safePathService.GetLogDirectoryPath(targetDirectoryPath);
             if (!Directory.Exists(logDirectoryPath))
             {
                 return new string[0];
@@ -48,36 +65,33 @@ namespace UpdateServer.Logging
                 logDirectoryPath,
                 SyncConfiguration.LogFilePrefix + "*" + SyncConfiguration.LogFileExtension);
 
-            if (logFilePaths.Length == 0)
-            {
-                return logFilePaths;
-            }
-
             Array.Sort(logFilePaths, StringComparer.OrdinalIgnoreCase);
 
             List<string> archiveCandidates = new List<string>();
             foreach (string logFilePath in logFilePaths)
             {
-                string fullLogPath = SyncPathUtility.GetFullPath(logFilePath);
-                if (string.Equals(fullLogPath, normalizedCurrentLogPath, StringComparison.OrdinalIgnoreCase))
+                string fullLogPath = safePathService.GetFullPath(logFilePath);
+                if (!string.Equals(fullLogPath, normalizedCurrentLogPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    continue;
+                    archiveCandidates.Add(fullLogPath);
                 }
-
-                archiveCandidates.Add(fullLogPath);
             }
 
             return archiveCandidates.ToArray();
         }
 
-        private static bool TryArchiveSingleLog(string targetDir, string logPath, Action<string> writeLogLine)
+        private static bool TryArchiveSingleLog(
+            string targetDirectoryPath,
+            string logPath,
+            ISafePathService safePathService,
+            Action<string> writeLogLine)
         {
             string archivePath = Path.ChangeExtension(logPath, SyncConfiguration.LogArchiveExtension);
             string tempArchivePath = archivePath + SyncConfiguration.LogArchiveTempExtension;
 
-            SafePathService.AssertSafeManagedPath(targetDir, logPath);
-            SafePathService.AssertSafeManagedPath(targetDir, archivePath);
-            SafePathService.AssertSafeManagedPath(targetDir, tempArchivePath);
+            safePathService.AssertSafeManagedPath(targetDirectoryPath, logPath);
+            safePathService.AssertSafeManagedPath(targetDirectoryPath, archivePath);
+            safePathService.AssertSafeManagedPath(targetDirectoryPath, tempArchivePath);
 
             TryDeleteFile(tempArchivePath);
 

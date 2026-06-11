@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using UpdateServer.Config;
 
 namespace UpdateServer.Sync
 {
@@ -10,13 +11,14 @@ namespace UpdateServer.Sync
 
         private SyncMutexHandle(Mutex mutexInstance)
         {
-            mutex = mutexInstance;
+            this.mutex = mutexInstance;
         }
 
         public static SyncMutexHandle Acquire(string targetHash)
         {
-            bool createdNew = false;
-            Mutex mutex = new Mutex(false, @"Local\PugGet5Sync_" + targetHash, out createdNew);
+            if (string.IsNullOrWhiteSpace(targetHash)) throw new ArgumentException("Value cannot be empty.", nameof(targetHash));
+
+            Mutex mutex = new Mutex(false, SyncConfiguration.MutexNamePrefix + targetHash);
             bool acquired = false;
 
             try
@@ -39,21 +41,21 @@ namespace UpdateServer.Sync
 
         public void Dispose()
         {
-            if (disposed)
+            if (this.disposed)
             {
                 return;
             }
 
-            disposed = true;
+            this.disposed = true;
             try
             {
-                mutex.ReleaseMutex();
+                this.mutex.ReleaseMutex();
             }
             catch
             {
             }
 
-            mutex.Dispose();
+            this.mutex.Dispose();
         }
     }
 }

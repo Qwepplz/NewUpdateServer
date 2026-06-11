@@ -1,12 +1,21 @@
+using System;
 using UpdateServer.App;
 
 namespace UpdateServer
 {
     internal static class Program
     {
-        public static int Main(string[] args)
+        private static int Main(string[] args)
         {
-            return new UpdateServerApplication().Run(args);
+            try
+            {
+                return new UpdateServerApplication().Run(args);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(exception);
+                return 1;
+            }
         }
     }
 }

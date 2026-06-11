@@ -6,10 +6,19 @@ using UpdateServer.Remote.Models;
 
 namespace UpdateServer.Security
 {
-    internal static class GitBlobHasher
+    internal interface IGitBlobHasher
     {
-        internal static string ComputeForFile(string path)
+        string ComputeForFile(string path);
+
+        bool MatchesRemoteBlob(string path, TreeEntry entry);
+    }
+
+    internal sealed class GitBlobHasher : IGitBlobHasher
+    {
+        public string ComputeForFile(string path)
         {
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Value cannot be empty.", nameof(path));
+
             FileInfo fileInfo = new FileInfo(path);
             byte[] prefixBytes = Encoding.ASCII.GetBytes("blob " + fileInfo.Length + "\0");
 
@@ -30,17 +39,10 @@ namespace UpdateServer.Security
             }
         }
 
-        internal static bool MatchesRemoteBlob(string path, TreeEntry entry)
+        public bool MatchesRemoteBlob(string path, TreeEntry entry)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                throw new ArgumentException("Value cannot be empty.", nameof(path));
-            }
-
-            if (entry == null)
-            {
-                throw new ArgumentNullException(nameof(entry));
-            }
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Value cannot be empty.", nameof(path));
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
 
             if (!File.Exists(path))
             {
@@ -53,7 +55,7 @@ namespace UpdateServer.Security
                 return false;
             }
 
-            string localSha = ComputeForFile(path);
+            string localSha = this.ComputeForFile(path);
             return string.Equals(localSha, entry.sha, StringComparison.OrdinalIgnoreCase);
         }
 

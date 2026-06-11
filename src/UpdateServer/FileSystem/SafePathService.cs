@@ -2,48 +2,117 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using UpdateServer.Config;
 
 namespace UpdateServer.FileSystem
 {
-    internal static class SafePathService
+    internal interface ISafePathService
     {
-        internal static HashSet<string> BuildProtectedPathSet(string targetDir)
+        string GetFullPath(string path);
+
+        string NormalizeRelativePath(string path);
+
+        string GetTargetPathFromRelative(string targetDirectoryPath, string relativePath);
+
+        string GetExecutablePath();
+
+        string GetLogDirectoryPath(string targetDirectoryPath);
+
+        HashSet<string> BuildProtectedPathSet(string targetDirectoryPath);
+
+        int RemoveStaleUpdaterArtifacts(string targetDirectoryPath, ISet<string> protectedPaths);
+
+        void AssertNoDirectoryConflict(string path);
+
+        IEnumerable<string> EnumerateFilesSafely(string rootDirectoryPath);
+
+        void AssertSafeManagedPath(string targetDirectoryPath, string path);
+
+        bool IsPathWithinTarget(string targetRoot, string fullPath);
+
+        void RemoveEmptyParentDirectories(string filePath, string stopAtDirectoryPath);
+    }
+
+    internal sealed class SafePathService : ISafePathService
+    {
+        private static string GetValidatedFullPath(string path, string paramName)
         {
-            string targetRoot = GetValidatedFullPath(targetDir, nameof(targetDir));
-            HashSet<string> protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string executablePath = SyncPathUtility.GetExecutablePath();
-            if (!string.IsNullOrEmpty(executablePath))
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Value cannot be empty.", paramName);
+            return Path.GetFullPath(path);
+        }
+
+        public string GetFullPath(string path)
+        {
+            return GetValidatedFullPath(path, nameof(path));
+        }
+
+        public string NormalizeRelativePath(string path)
+        {
+            return (path ?? string.Empty).Replace('\\', '/');
+        }
+
+        public string GetTargetPathFromRelative(string targetDirectoryPath, string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
+            if (string.IsNullOrWhiteSpace(relativePath)) throw new ArgumentException("Value cannot be empty.", nameof(relativePath));
+
+            string windowsRelativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+            return Path.Combine(targetDirectoryPath, windowsRelativePath);
+        }
+
+        public string GetExecutablePath()
+        {
+            try
             {
-                protectedPaths.Add(GetValidatedFullPath(executablePath, nameof(executablePath)));
+                Assembly entryAssembly = Assembly.GetEntryAssembly();
+                if (entryAssembly == null || string.IsNullOrWhiteSpace(entryAssembly.Location))
+                {
+                    return string.Empty;
+                }
+
+                return this.GetFullPath(entryAssembly.Location);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        public string GetLogDirectoryPath(string targetDirectoryPath)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
+            return this.GetFullPath(Path.Combine(targetDirectoryPath, SyncConfiguration.LogDirectoryName));
+        }
+
+        public HashSet<string> BuildProtectedPathSet(string targetDirectoryPath)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
+
+            HashSet<string> protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string executablePath = this.GetExecutablePath();
+            if (!string.IsNullOrWhiteSpace(executablePath))
+            {
+                protectedPaths.Add(this.GetFullPath(executablePath));
             }
 
-            string[] knownHelperNames = new[]
+            foreach (string helperFileName in SyncConfiguration.ProtectedHelperFileNames)
             {
-                "_UpdateServer.bat",
-                "_UpdateServer.ps1",
-                "UpdateServer.cs",
-                "Build-UpdateServer.bat",
-                "Build-UpdateServer.cmd",
-                "UpdateServer.exe"
-            };
-
-            foreach (string helperName in knownHelperNames)
-            {
-                string fullPath = GetValidatedFullPath(Path.Combine(targetRoot, helperName), nameof(targetDir));
-                if (File.Exists(fullPath))
+                string helperPath = this.GetFullPath(Path.Combine(targetDirectoryPath, helperFileName));
+                if (File.Exists(helperPath))
                 {
-                    protectedPaths.Add(fullPath);
+                    protectedPaths.Add(helperPath);
                 }
             }
 
-            string logDirectoryPath = GetValidatedFullPath(SyncPathUtility.GetLogDirectoryPath(targetRoot), nameof(targetDir));
+            string logDirectoryPath = this.GetLogDirectoryPath(targetDirectoryPath);
             try
             {
                 if (Directory.Exists(logDirectoryPath) && (File.GetAttributes(logDirectoryPath) & FileAttributes.ReparsePoint) == 0)
                 {
-                    foreach (string logFilePath in EnumerateFilesSafely(logDirectoryPath))
+                    foreach (string logFilePath in this.EnumerateFilesSafely(logDirectoryPath))
                     {
-                        protectedPaths.Add(GetValidatedFullPath(logFilePath, nameof(logDirectoryPath)));
+                        protectedPaths.Add(this.GetFullPath(logFilePath));
                     }
                 }
             }
@@ -54,172 +123,117 @@ namespace UpdateServer.FileSystem
             return protectedPaths;
         }
 
-        internal static void WriteFileAtomically(string sourcePath, string destinationPath)
+        public void AssertNoDirectoryConflict(string path)
         {
-            sourcePath = GetValidatedFullPath(sourcePath, nameof(sourcePath));
-            destinationPath = GetValidatedFullPath(destinationPath, nameof(destinationPath));
-
-            string parent = Path.GetDirectoryName(destinationPath);
-            if (!Directory.Exists(parent))
-            {
-                Directory.CreateDirectory(parent);
-            }
-
-            string fileName = Path.GetFileName(destinationPath);
-            string stagingPath = Path.Combine(parent, fileName + ".__pug_get5_sync_staging__" + Guid.NewGuid().ToString("N"));
-            string backupPath = Path.Combine(parent, fileName + ".__pug_get5_sync_backup__" + Guid.NewGuid().ToString("N"));
-
-            try
-            {
-                File.Copy(sourcePath, stagingPath, true);
-                if (File.Exists(destinationPath))
-                {
-                    File.Replace(stagingPath, destinationPath, backupPath, true);
-                    if (File.Exists(backupPath))
-                    {
-                        File.Delete(backupPath);
-                    }
-                }
-                else
-                {
-                    File.Move(stagingPath, destinationPath);
-                }
-            }
-            finally
-            {
-                if (File.Exists(stagingPath))
-                {
-                    try
-                    {
-                        File.Delete(stagingPath);
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                if (File.Exists(backupPath))
-                {
-                    try
-                    {
-                        File.Delete(backupPath);
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-        }
-
-        internal static void AssertNoDirectoryConflict(string path)
-        {
-            path = GetValidatedFullPath(path, nameof(path));
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Value cannot be empty.", nameof(path));
             if (Directory.Exists(path))
             {
                 throw new InvalidOperationException("Cannot place file because a directory exists at: " + path);
             }
         }
 
-        internal static int RemoveStaleUpdaterArtifacts(string targetDir, HashSet<string> protectedPaths)
+        public int RemoveStaleUpdaterArtifacts(string targetDirectoryPath, ISet<string> protectedPaths)
         {
-            string targetRoot = GetValidatedFullPath(targetDir, nameof(targetDir));
+            if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
+            if (protectedPaths == null) throw new ArgumentNullException(nameof(protectedPaths));
+
             List<string> artifactPaths = new List<string>();
-            foreach (string path in EnumerateFilesSafely(targetRoot))
+            foreach (string path in this.EnumerateFilesSafely(targetDirectoryPath))
             {
                 string fileName = Path.GetFileName(path);
-                if (fileName.IndexOf(".__pug_get5_sync_staging__", StringComparison.OrdinalIgnoreCase) >= 0
-                    || fileName.IndexOf(".__pug_get5_sync_backup__", StringComparison.OrdinalIgnoreCase) >= 0
-                    || fileName.IndexOf(".__betterbot_sync_staging__", StringComparison.OrdinalIgnoreCase) >= 0
-                    || fileName.IndexOf(".__betterbot_sync_backup__", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (SyncConfiguration.ArtifactMarkers.Any(marker => fileName.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0))
                 {
                     artifactPaths.Add(path);
                 }
             }
 
             int removedCount = 0;
-            foreach (string path in artifactPaths.OrderBy(item => item, StringComparer.OrdinalIgnoreCase))
+            foreach (string artifactPath in artifactPaths.OrderBy(item => item, StringComparer.OrdinalIgnoreCase))
             {
-                string fullPath = GetValidatedFullPath(path, nameof(path));
+                string fullPath = this.GetFullPath(artifactPath);
                 if (protectedPaths.Contains(fullPath))
                 {
                     continue;
                 }
 
-                AssertSafeManagedPath(targetRoot, fullPath);
+                this.AssertSafeManagedPath(targetDirectoryPath, fullPath);
                 File.Delete(fullPath);
-                RemoveEmptyParentDirectories(fullPath, targetRoot);
+                this.RemoveEmptyParentDirectories(fullPath, targetDirectoryPath);
                 removedCount++;
             }
 
             return removedCount;
         }
 
-        internal static void RemoveEmptyParentDirectories(string filePath, string stopAt)
+        public void RemoveEmptyParentDirectories(string filePath, string stopAtDirectoryPath)
         {
-            string stopFull = GetValidatedFullPath(stopAt, nameof(stopAt)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            string current = Path.GetDirectoryName(GetValidatedFullPath(filePath, nameof(filePath)));
+            if (string.IsNullOrWhiteSpace(filePath)) throw new ArgumentException("Value cannot be empty.", nameof(filePath));
 
-            while (!string.IsNullOrEmpty(current))
+            string stopFullPath = GetValidatedFullPath(stopAtDirectoryPath, nameof(stopAtDirectoryPath)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string currentDirectoryPath = Path.GetDirectoryName(filePath);
+
+            while (!string.IsNullOrEmpty(currentDirectoryPath))
             {
-                string currentFull = GetValidatedFullPath(current, nameof(filePath)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                if (currentFull.Length <= stopFull.Length)
+                string currentFullPath = this.GetFullPath(currentDirectoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (currentFullPath.Length <= stopFullPath.Length)
                 {
                     break;
                 }
 
-                if (Directory.EnumerateFileSystemEntries(currentFull).Any())
+                if (Directory.EnumerateFileSystemEntries(currentFullPath).Any())
                 {
                     break;
                 }
 
-                Directory.Delete(currentFull, false);
-                current = Path.GetDirectoryName(currentFull);
+                Directory.Delete(currentFullPath, false);
+                currentDirectoryPath = Path.GetDirectoryName(currentFullPath);
             }
         }
 
-        internal static IEnumerable<string> EnumerateFilesSafely(string rootDir)
+        public IEnumerable<string> EnumerateFilesSafely(string rootDirectoryPath)
         {
-            rootDir = GetValidatedFullPath(rootDir, nameof(rootDir));
+            if (string.IsNullOrWhiteSpace(rootDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(rootDirectoryPath));
+
             Stack<string> pendingDirectories = new Stack<string>();
-            pendingDirectories.Push(rootDir);
+            pendingDirectories.Push(rootDirectoryPath);
 
             while (pendingDirectories.Count > 0)
             {
-                string currentDir = pendingDirectories.Pop();
+                string currentDirectoryPath = pendingDirectories.Pop();
 
                 IEnumerable<string> files = Enumerable.Empty<string>();
                 try
                 {
-                    files = Directory.EnumerateFiles(currentDir);
+                    files = Directory.EnumerateFiles(currentDirectoryPath);
                 }
                 catch
                 {
                 }
 
-                foreach (string file in files)
+                foreach (string filePath in files)
                 {
-                    yield return file;
+                    yield return filePath;
                 }
 
-                IEnumerable<string> subDirectories = Enumerable.Empty<string>();
+                IEnumerable<string> subDirectoryPaths = Enumerable.Empty<string>();
                 try
                 {
-                    subDirectories = Directory.EnumerateDirectories(currentDir);
+                    subDirectoryPaths = Directory.EnumerateDirectories(currentDirectoryPath);
                 }
                 catch
                 {
                 }
 
-                foreach (string subDirectory in subDirectories)
+                foreach (string subDirectoryPath in subDirectoryPaths)
                 {
                     try
                     {
-                        if ((File.GetAttributes(subDirectory) & FileAttributes.ReparsePoint) != 0)
+                        if ((File.GetAttributes(subDirectoryPath) & FileAttributes.ReparsePoint) != 0)
                         {
                             continue;
                         }
 
-                        pendingDirectories.Push(subDirectory);
+                        pendingDirectories.Push(subDirectoryPath);
                     }
                     catch
                     {
@@ -228,61 +242,53 @@ namespace UpdateServer.FileSystem
             }
         }
 
-        internal static void AssertSafeManagedPath(string targetDir, string path)
+        public void AssertSafeManagedPath(string targetDirectoryPath, string path)
         {
-            string targetRoot = GetValidatedFullPath(targetDir, nameof(targetDir)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string targetRoot = GetValidatedFullPath(targetDirectoryPath, nameof(targetDirectoryPath)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             string fullPath = GetValidatedFullPath(path, nameof(path));
 
-            if (!IsPathWithinTarget(targetRoot, fullPath))
+            if (!this.IsPathWithinTarget(targetRoot, fullPath))
             {
                 throw new InvalidOperationException("Refusing to touch a path outside the target folder: " + fullPath);
             }
 
-            string current = fullPath;
-            while (!string.IsNullOrEmpty(current))
+            string currentPath = fullPath;
+            while (!string.IsNullOrEmpty(currentPath))
             {
-                bool exists = Directory.Exists(current) || File.Exists(current);
+                bool exists = Directory.Exists(currentPath) || File.Exists(currentPath);
                 if (exists)
                 {
-                    FileAttributes attributes = File.GetAttributes(current);
+                    FileAttributes attributes = File.GetAttributes(currentPath);
                     if ((attributes & FileAttributes.ReparsePoint) != 0)
                     {
-                        throw new InvalidOperationException("Refusing to touch a reparse point path: " + current);
+                        throw new InvalidOperationException("Refusing to touch a reparse point path: " + currentPath);
                     }
                 }
 
-                string trimmedCurrent = current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                if (string.Equals(trimmedCurrent, targetRoot, StringComparison.OrdinalIgnoreCase))
+                string trimmedCurrentPath = currentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.Equals(trimmedCurrentPath, targetRoot, StringComparison.OrdinalIgnoreCase))
                 {
                     break;
                 }
 
-                current = Path.GetDirectoryName(trimmedCurrent);
+                currentPath = Path.GetDirectoryName(trimmedCurrentPath);
             }
         }
 
-        private static bool IsPathWithinTarget(string targetRoot, string fullPath)
+        public bool IsPathWithinTarget(string targetRoot, string fullPath)
         {
-            string normalizedTarget = targetRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            string normalizedFull = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(targetRoot)) throw new ArgumentException("Value cannot be empty.", nameof(targetRoot));
+            if (string.IsNullOrWhiteSpace(fullPath)) throw new ArgumentException("Value cannot be empty.", nameof(fullPath));
 
-            if (string.Equals(normalizedTarget, normalizedFull, StringComparison.OrdinalIgnoreCase))
+            string normalizedTarget = targetRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normalizedFullPath = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(normalizedTarget, normalizedFullPath, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
 
             string prefix = normalizedTarget + Path.DirectorySeparatorChar;
-            return normalizedFull.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string GetValidatedFullPath(string path, string paramName)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                throw new ArgumentException("Value cannot be empty.", paramName);
-            }
-
-            return SyncPathUtility.GetFullPath(path);
+            return normalizedFullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
         }
     }
 }
