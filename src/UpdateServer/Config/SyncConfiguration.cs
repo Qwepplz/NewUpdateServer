@@ -5,7 +5,7 @@ namespace UpdateServer.Config
     internal static class SyncConfiguration
     {
         public const int RequestTimeoutMs = 15000;
-        public const string RemoteUserAgent = "PugGet5Sync";
+        public const string RemoteUserAgent = "Get5Sync";
         public const string ApiAcceptHeader = "application/json";
         public const string BinaryAcceptHeader = "application/octet-stream, */*";
         public const string LogDirectoryName = "log";

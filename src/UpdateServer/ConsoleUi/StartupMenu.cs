@@ -1,25 +1,22 @@
 using System;
-using System.Collections.Generic;
 using UpdateServer.Config;
 
 namespace UpdateServer.ConsoleUi
 {
     internal sealed class StartupMenu
     {
-        public List<RepositoryTarget> ShowStartupPrompt(string targetDirectoryPath)
+        public bool ShowStartupPrompt(string targetDirectoryPath)
         {
             if (string.IsNullOrWhiteSpace(targetDirectoryPath)) throw new ArgumentException("Value cannot be empty.", nameof(targetDirectoryPath));
 
-            Console.WriteLine("Pug/Get5 updater");
+            Console.WriteLine("Get5 updater");
             Console.WriteLine();
             Console.WriteLine("Target folder:");
             Console.WriteLine(targetDirectoryPath);
             Console.WriteLine();
             Console.WriteLine("This will sync upstream changes into the current folder.");
-            Console.WriteLine("Choose what to sync:");
-            Console.WriteLine("1 - pug  (Qwepplz/pug)");
-            Console.WriteLine("2 - get5 (Qwepplz/get5)");
-            Console.WriteLine("3 - all");
+            Console.WriteLine("Sync target: Qwepplz/get5");
+            Console.WriteLine("Press ENTER to start syncing.");
             Console.WriteLine("Press ESC to exit immediately.");
             Console.WriteLine();
 
@@ -28,31 +25,23 @@ namespace UpdateServer.ConsoleUi
                 while (true)
                 {
                     ConsoleKeyInfo keyInfo = Console.ReadKey(true);
-                    if (keyInfo.Key == ConsoleKey.D1 || keyInfo.Key == ConsoleKey.NumPad1)
+                    if (keyInfo.Key == ConsoleKey.Enter)
                     {
-                        return SelectRepositories("pug", new List<RepositoryTarget> { RepositoryCatalog.PugRepository });
-                    }
-
-                    if (keyInfo.Key == ConsoleKey.D2 || keyInfo.Key == ConsoleKey.NumPad2)
-                    {
-                        return SelectRepositories("get5", new List<RepositoryTarget> { RepositoryCatalog.Get5Repository });
-                    }
-
-                    if (keyInfo.Key == ConsoleKey.D3 || keyInfo.Key == ConsoleKey.NumPad3)
-                    {
-                        return SelectRepositories("all", new List<RepositoryTarget>(RepositoryCatalog.AllRepositories));
+                        Console.WriteLine("Starting sync...");
+                        Console.WriteLine();
+                        return true;
                     }
 
                     if (keyInfo.Key == ConsoleKey.Escape)
                     {
                         Console.WriteLine("Exited by user.");
-                        return new List<RepositoryTarget>();
+                        return false;
                     }
                 }
             }
             catch
             {
-                return new List<RepositoryTarget>(RepositoryCatalog.AllRepositories);
+                return true;
             }
         }
 
@@ -111,14 +100,6 @@ namespace UpdateServer.ConsoleUi
             catch
             {
             }
-        }
-
-        private static List<RepositoryTarget> SelectRepositories(string selectionName, List<RepositoryTarget> repositories)
-        {
-            Console.WriteLine("Selected: " + selectionName);
-            Console.WriteLine("Starting sync...");
-            Console.WriteLine();
-            return repositories;
         }
     }
 }

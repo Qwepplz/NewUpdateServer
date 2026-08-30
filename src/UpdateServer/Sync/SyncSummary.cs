@@ -21,24 +21,5 @@ namespace UpdateServer.Sync
         public int Unchanged { get; set; }
 
         public HashSet<string> SkippedConflictFiles { get; private set; }
-
-        public void Merge(SyncSummary other)
-        {
-            if (other == null)
-            {
-                return;
-            }
-
-            this.Added += other.Added;
-            this.Updated += other.Updated;
-            this.Removed += other.Removed;
-            this.ExcludedRemoved += other.ExcludedRemoved;
-            this.Unchanged += other.Unchanged;
-
-            foreach (string path in other.SkippedConflictFiles)
-            {
-                this.SkippedConflictFiles.Add(path);
-            }
-        }
     }
 }

@@ -115,8 +115,7 @@ namespace UpdateServer.App
 
             try
             {
-                List<RepositoryTarget> selectedRepositories = this.startupMenu.ShowStartupPrompt(targetDirectoryPath);
-                if (selectedRepositories.Count == 0)
+                if (!this.startupMenu.ShowStartupPrompt(targetDirectoryPath))
                 {
                     return this.ExitWithoutSynchronization();
                 }
@@ -126,9 +125,8 @@ namespace UpdateServer.App
                 this.ReportStaleArtifacts(context);
                 context.CreateTempRootDirectory();
 
-                int synchronizedRepositoryCount;
-                SyncSummary totalSummary = this.SynchronizeSelectedRepositories(selectedRepositories, context, out synchronizedRepositoryCount);
-                return this.CompleteRun(totalSummary, synchronizedRepositoryCount);
+                SyncSummary syncSummary = this.TrySynchronizeRepository(RepositoryCatalog.Get5Repository, context);
+                return this.CompleteRun(syncSummary);
             }
             catch (Exception exception)
             {
@@ -161,53 +159,47 @@ namespace UpdateServer.App
             }
         }
 
-        private SyncSummary SynchronizeSelectedRepositories(List<RepositoryTarget> selectedRepositories, RunContext context, out int synchronizedRepositoryCount)
+        private SyncSummary TrySynchronizeRepository(RepositoryTarget repository, RunContext context)
         {
-            SyncSummary totalSummary = new SyncSummary();
-            synchronizedRepositoryCount = 0;
+            if (repository == null) throw new ArgumentNullException(nameof(repository));
+            if (context == null) throw new ArgumentNullException(nameof(context));
 
-            foreach (RepositoryTarget repository in selectedRepositories)
+            Console.WriteLine();
+            Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
+
+            TreeResult preparedTree;
+            RepositoryRemoteKind remoteKind;
+            if (!this.TryPrepareRepositoryTree(repository, context.TempRootDirectoryPath, out preparedTree, out remoteKind))
             {
-                Console.WriteLine();
-                Console.WriteLine(string.Format("=== {0}/{1} ({2}) ===", repository.GithubOwner, repository.GithubRepo, repository.DisplayName));
-
-                TreeResult preparedTree;
-                RepositoryRemoteKind remoteKind;
-                if (!this.TryPrepareRepositoryTree(repository, context.TempRootDirectoryPath, out preparedTree, out remoteKind))
-                {
-                    continue;
-                }
-
-                totalSummary.Merge(this.repositorySynchronizer.Synchronize(
-                    repository,
-                    preparedTree,
-                    remoteKind,
-                    context.TargetDirectoryPath,
-                    context.StateRoot,
-                    context.ProtectedPaths,
-                    context.TempRootDirectoryPath,
-                    this.activeLog));
-                synchronizedRepositoryCount++;
+                return null;
             }
 
-            return totalSummary;
+            return this.repositorySynchronizer.Synchronize(
+                repository,
+                preparedTree,
+                remoteKind,
+                context.TargetDirectoryPath,
+                context.StateRoot,
+                context.ProtectedPaths,
+                context.TempRootDirectoryPath,
+                this.activeLog);
         }
 
-        private int CompleteRun(SyncSummary totalSummary, int synchronizedRepositoryCount)
+        private int CompleteRun(SyncSummary syncSummary)
         {
             Console.WriteLine();
-            if (synchronizedRepositoryCount == 0)
+            if (syncSummary == null)
             {
-                Console.WriteLine("No repositories were synchronized.");
+                Console.WriteLine("Get5 sync was not completed.");
                 this.startupMenu.PauseBeforeExit();
                 return 0;
             }
 
-            Console.WriteLine(synchronizedRepositoryCount > 1 ? "Selected syncs complete." : "Sync complete.");
-            Console.WriteLine(string.Format("Added: {0}", totalSummary.Added));
-            Console.WriteLine(string.Format("Updated: {0}", totalSummary.Updated));
-            Console.WriteLine(string.Format("Removed: {0}", totalSummary.Removed));
-            Console.WriteLine(string.Format("Unchanged: {0}", totalSummary.Unchanged));
+            Console.WriteLine("Sync complete.");
+            Console.WriteLine(string.Format("Added: {0}", syncSummary.Added));
+            Console.WriteLine(string.Format("Updated: {0}", syncSummary.Updated));
+            Console.WriteLine(string.Format("Removed: {0}", syncSummary.Removed));
+            Console.WriteLine(string.Format("Unchanged: {0}", syncSummary.Unchanged));
             this.startupMenu.PauseBeforeExit();
             return 0;
         }

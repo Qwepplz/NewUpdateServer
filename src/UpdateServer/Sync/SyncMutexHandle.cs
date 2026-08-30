@@ -33,7 +33,7 @@ namespace UpdateServer.Sync
             if (!acquired)
             {
                 mutex.Dispose();
-                throw new InvalidOperationException("Another Pug/Get5 sync is already running for this folder.");
+                throw new InvalidOperationException("Another Get5 sync is already running for this folder.");
             }
 
             return new SyncMutexHandle(mutex);
